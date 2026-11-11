@@ -1,0 +1,20 @@
+# бинарник и артефакты сборки
+/remoteadmin
+/remoteadmin.exe
+*.AppImage
+*.deb
+*.rpm
+/dist/
+/rpmbuild/
+*.squashfs
+
+# временные файлы
+*.tmp
+*.ra_bak*
+/tmp/
+state.json
+
+# редакторы
+.idea/
+.vscode/
+*.swp
