@@ -72,3 +72,39 @@ func treeViewDestRowAtPos(tv *gtk.TreeView, x, y int) *gtk.TreePath {
 	}
 	return tp
 }
+
+// treeViewDestRowAtPosEx — как treeViewDestRowAtPos, но возвращает и позицию
+// вставки (BEFORE/AFTER/INTO…), которая нужна для сортировки задач плейбука.
+func treeViewDestRowAtPosEx(tv *gtk.TreeView, x, y int) (*gtk.TreePath, gtk.TreeViewDropPosition) {
+	if tv == nil {
+		return nil, gtk.TREE_VIEW_DROP_AFTER
+	}
+	var p *C.GtkTreePath
+	var pos C.GtkTreeViewDropPosition
+	ok := C.gtk_tree_view_get_dest_row_at_pos(
+		(*C.GtkTreeView)(unsafe.Pointer(tv.ToWidget().Native())),
+		C.gint(x), C.gint(y),
+		&p, &pos,
+	)
+	if ok == 0 || p == nil {
+		return nil, gtk.TREE_VIEW_DROP_AFTER
+	}
+	str := C.GoString(C.gtk_tree_path_to_string(p))
+	C.gtk_tree_path_free(p)
+	tp, err := gtk.TreePathNewFromString(str)
+	if err != nil {
+		return nil, gtk.TREE_VIEW_DROP_AFTER
+	}
+	return tp, gtk.TreeViewDropPosition(pos)
+}
+
+// popoverPopup показывает GtkPopover (gotk3 не оборачивает gtk_popover_popup;
+// gtk_widget_show тоже открывает, но без анимации).
+func popoverPopup(p *gtk.Popover) {
+	if p == nil {
+		return
+	}
+	C.gtk_popover_popup(
+		(*C.GtkPopover)(unsafe.Pointer(p.ToWidget().Native())),
+	)
+}

@@ -1,7 +1,21 @@
 package main
 
+// playbook.go — вкладка «Плейбук»: редактор последовательности задач.
+//
+// v1.7.0:
+//   * подсказка (tooltip) с ПОЛНЫМ текстом команды при наведении на строку;
+//   * перетаскивание задач мышью (drag-and-drop) в дополнение к стрелкам;
+//   * подсветка синтаксиса bash в редакторе команд;
+//   * кнопка «Проверить синтаксис» (кавычки/скобки/блоки if-fi/do-done);
+//   * выбор хостов-получателей прямо во вкладке (кнопка «Цель: …»);
+//   * переменные {{ var }} — глобальные и по хостам (кнопка «Переменные…»);
+//   * галочка «Прервать при ошибке» + условие выполнения каждой задачи;
+//   * новые типы задач: «Служба systemctl» и «Пакеты dnf/yum».
+
 import (
 	"fmt"
+	"os"
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -11,16 +25,20 @@ import (
 	"golang.org/x/crypto/ssh"
 )
 
-var pbTypes = []struct {
+type pbType struct {
 	Key string
 	Ru  string
-}{
+}
+
+var pbTypes = []pbType{
 	{"command", "Команда"},
 	{"script", "Скрипт"},
 	{"copy", "Копировать"},
 	{"replace", "Заменить файл"},
 	{"replace_with_cmds", "Заменить + команды"},
 	{"edit", "Редактировать"},
+	{"service", "Служба systemctl"},
+	{"package", "Пакеты dnf/yum"},
 }
 
 func pbTypeRu(key string) string {
@@ -32,30 +50,76 @@ func pbTypeRu(key string) string {
 	return key
 }
 
+// serviceActions / pkgActions — подписи и ключи действий для комбо «Действие».
+var serviceActions = []struct{ Key, Ru string }{
+	{"restart", "Перезапустить (restart)"},
+	{"start", "Запустить (start)"},
+	{"stop", "Остановить (stop)"},
+	{"reload", "Перечитать конфигурацию (reload)"},
+	{"status", "Показать статус (status)"},
+	{"enable", "Включить автозапуск (enable)"},
+	{"disable", "Выключить автозапуск (disable)"},
+}
+
+var pkgActions = []struct{ Key, Ru string }{
+	{"install", "Установить (install)"},
+	{"remove", "Удалить (remove)"},
+	{"upgrade", "Обновить все пакеты (upgrade)"},
+	{"info", "Информация о пакете (info)"},
+}
+
+var runIfOptions = []struct{ Key, Ru string }{
+	{"always", "Всегда"},
+	{"on_success", "Только если предыдущая успешна"},
+	{"on_failure", "Только если предыдущая упала"},
+}
+
+// колонки таблицы задач
+const (
+	pbColNum  = 0
+	pbColDesc = 1
+	pbColFull = 2 // скрытая: полный текст для tooltip
+)
+
 // PlaybookUI is the task sequence editor tab.
 type PlaybookUI struct {
-	widget    gtk.IWidget
-	tree      *gtk.TreeView
-	st        *gtk.ListStore
-	typeCombo *gtk.ComboBoxText
-	form      *simpleGrid
-	sourceE   *gtk.Entry
-	sourceBtn *gtk.Button // «Обзор…» — выбрать локальный скрипт/файл
-	destE     *gtk.Entry
-	searchE   *gtk.Entry
-	replaceE  *gtk.Entry
-	serviceE  *gtk.Entry
-	postE     *gtk.TextView
-	rootC     *gtk.CheckButton
-	formRows  map[string]*gtk.Widget
+	widget      gtk.IWidget
+	tree        *gtk.TreeView
+	st          *gtk.ListStore
+	typeCombo   *gtk.ComboBoxText
+	actionCombo *gtk.ComboBoxText
+	runIfCombo  *gtk.ComboBoxText
+	form        *simpleGrid
+	sourceE     *gtk.Entry
+	sourceBtn   *gtk.Button // «Обзор…» — выбрать локальный скрипт/файл
+	cmdEd       *bashEditor // редактор команды с подсветкой bash
+	srcRow      *gtk.Box    // строка «источник» (вне типа «Команда»)
+	cmdScroll   *gtk.ScrolledWindow
+	destE       *gtk.Entry
+	searchE     *gtk.Entry
+	replaceE    *gtk.Entry
+	serviceE    *gtk.Entry
+	postEd      *bashEditor
+	rootC       *gtk.CheckButton
+	abortC      *gtk.CheckButton
+	hostBtn     *gtk.Button
+	srcLabel    *gtk.Label
+	rowLabels   map[string]*gtk.Label // подписи строк формы (скрываются вместе с полями)
+	hostLbl     string
+	hostPop     *gtk.Popover
+	updatingAct bool
 }
 
 func newPlaybookUI() *PlaybookUI {
 	u := &PlaybookUI{}
 	root := boxNew(gtk.ORIENTATION_HORIZONTAL, 8)
-	// left: task list
+
+	// ===== left: task list =====
 	leftCard, leftBox := cardBox("Последовательность задач")
-	u.tree, u.st = makeTree([]string{"#", "Задача"}, []glib.Type{glib.TYPE_STRING, glib.TYPE_STRING})
+	u.tree, u.st = makeTree([]string{"#", "Задача", ""}, []glib.Type{glib.TYPE_STRING, glib.TYPE_STRING, glib.TYPE_STRING})
+	hideCol(u.tree, pbColFull)
+	// подсказка с ПОЛНЫМ текстом задачи (команда не обрезается)
+	u.tree.SetTooltipColumn(pbColFull)
 	sel, _ := u.tree.GetSelection()
 	sel.SetMode(gtk.SELECTION_SINGLE)
 	sel.Connect("changed", func() { u.loadSelectedIntoForm() })
@@ -73,23 +137,56 @@ func newPlaybookUI() *PlaybookUI {
 	sc.SetVExpand(true)
 	leftBox.PackStart(sc, true, true, 0)
 
+	// ---- drag-and-drop: перетаскивание задач мышью ----
+	u.setupDnD()
+
 	btnRow := boxNew(gtk.ORIENTATION_HORIZONTAL, 3)
 	btnUp := buttonNew("↑")
+	btnUp.SetTooltipText("Переместить задачу вверх (можно просто перетащить мышью)")
 	btnUp.Connect("clicked", func() { u.move(-1) })
 	btnDown := buttonNew("↓")
+	btnDown.SetTooltipText("Переместить задачу вниз")
 	btnDown.Connect("clicked", func() { u.move(1) })
 	btnDel := buttonNew("🗑")
+	btnDel.SetTooltipText("Удалить задачу (Delete)")
 	btnDel.Connect("clicked", func() { u.removeSelected() })
 	btnRow.PackStart(btnUp, false, false, 0)
 	btnRow.PackStart(btnDown, false, false, 0)
 	btnRow.PackStart(btnDel, false, false, 0)
+	dndHint := labelNew("↷ задачи можно перетаскивать мышью")
+	addClass(dndHint, "ramuted")
+	dndHint.SetXAlign(0)
+	btnRow.PackStart(dndHint, true, true, 0)
 	leftBox.PackStart(btnRow, false, false, 0)
 
+	// ---- run controls ----
 	runRow := boxNew(gtk.ORIENTATION_HORIZONTAL, 3)
 	btnRun := buttonNew("Запустить playbook")
 	scr, _ := btnRun.GetStyleContext()
 	scr.AddClass("suggested")
+	btnRun.SetTooltipText("Выполнить задачи на выбранных хостах")
 	btnRun.Connect("clicked", func() { u.runPlaybook() })
+
+	// кнопка выбора хостов-получателей прямо здесь (без переключения вкладок)
+	u.hostBtn = buttonNew("Цель: все")
+	u.hostBtn.SetTooltipText("Выбрать хосты для запуска плейбука")
+	u.hostBtn.Connect("clicked", func() { u.showHostPicker() })
+
+	runRow.PackStart(btnRun, true, true, 0)
+	runRow.PackStart(u.hostBtn, true, true, 0)
+	leftBox.PackStart(runRow, false, false, 0)
+
+	optRow := boxNew(gtk.ORIENTATION_HORIZONTAL, 3)
+	u.abortC, _ = gtk.CheckButtonNewWithLabel("Прервать при ошибке")
+	u.abortC.SetTooltipText("Включено: первая же ошибка останавливает плейбук на этом хосте.\nВыключено: выполнение продолжается до конца.")
+	u.abortC.SetActive(!store.State.PlaybookContinueOnError)
+	u.abortC.Connect("toggled", func() {
+		store.State.PlaybookContinueOnError = !u.abortC.GetActive()
+		_ = store.Save()
+	})
+	btnVars := buttonNew("Переменные…")
+	btnVars.SetTooltipText("Переменные {{ var }}: глобальные и для конкретных хостов")
+	btnVars.Connect("clicked", func() { showPlaybookVarsDialog() })
 	btnTpl := buttonNew("Сохранить как шаблон")
 	btnTpl.Connect("clicked", func() { u.saveAsTemplate() })
 	btnClear := buttonNew("Очистить")
@@ -100,12 +197,13 @@ func newPlaybookUI() *PlaybookUI {
 			u.refresh()
 		}
 	})
-	runRow.PackStart(btnRun, true, true, 0)
-	runRow.PackStart(btnTpl, true, true, 0)
-	runRow.PackStart(btnClear, false, false, 0)
-	leftBox.PackStart(runRow, false, false, 0)
+	optRow.PackStart(u.abortC, false, false, 0)
+	optRow.PackStart(btnVars, true, true, 0)
+	optRow.PackStart(btnTpl, true, true, 0)
+	optRow.PackStart(btnClear, false, false, 0)
+	leftBox.PackStart(optRow, false, false, 0)
 
-	// right: task form
+	// ===== right: task form =====
 	rightCard, rightBox := cardBox("Параметры задачи")
 
 	u.typeCombo, _ = gtk.ComboBoxTextNew()
@@ -120,8 +218,9 @@ func newPlaybookUI() *PlaybookUI {
 	rightBox.PackStart(typeRow, false, false, 0)
 
 	u.form = mkGrid()
+
+	// источник: Entry+Обзор для файлов/путей, TextView с подсветкой для команд
 	u.sourceE = entryNew("Источник / команда")
-	// «Обзор…» — выбрать скрипт/файл диалогом вместо ручного ввода пути
 	u.sourceBtn = buttonNew("Обзор…")
 	u.sourceBtn.SetTooltipText("Выбрать локальный файл или скрипт")
 	u.sourceBtn.Connect("clicked", func() {
@@ -130,32 +229,61 @@ func newPlaybookUI() *PlaybookUI {
 			u.sourceE.SetText(fn)
 		}
 	})
-	srcRow := boxNew(gtk.ORIENTATION_HORIZONTAL, 4)
-	srcRow.PackStart(u.sourceE, true, true, 0)
-	srcRow.PackStart(u.sourceBtn, false, false, 0)
+	u.srcRow = boxNew(gtk.ORIENTATION_HORIZONTAL, 4)
+	u.srcRow.PackStart(u.sourceE, true, true, 0)
+	u.srcRow.PackStart(u.sourceBtn, false, false, 0)
+	// редактор команды с подсветкой bash
+	u.cmdEd = newBashEditor(64)
+	u.cmdEd.tv.SetTooltipText("Введите команду; поддерживаются переменные {{ var }}, подсветка bash включена")
+	u.cmdScroll = scrolled(u.cmdEd.tv, 64)
+	srcStack := boxNew(gtk.ORIENTATION_VERTICAL, 0)
+	srcStack.PackStart(u.srcRow, false, false, 0)
+	srcStack.PackStart(u.cmdScroll, false, false, 0)
+
 	u.destE = entryNew("Назначение (напр. /etc/app.conf)")
 	u.searchE = entryNew("Найти текст")
 	u.replaceE = entryNew("Заменить на")
 	u.serviceE = entryNew("Служба для перезапуска (опц.)")
-	u.postE, _ = gtk.TextViewNew()
-	tvSet(u.postE, 70)
-	postScroll := scrolled(u.postE, 60)
+	u.postEd = newBashEditor(52)
+	u.postEd.tv.SetTooltipText("По одной команде на строку; подсветка и проверка синтаксиса")
+	postScroll := scrolled(u.postEd.tv, 52)
 
-	u.form.attach(labelNew("Источник:"), 0, 0, 1, 1)
-	u.form.attach(srcRow, 1, 0, 1, 1)
-	u.form.attach(labelNew("Назначение:"), 0, 1, 1, 1)
-	u.form.attach(u.destE, 1, 1, 1, 1)
-	u.form.attach(labelNew("Найти:"), 0, 2, 1, 1)
-	u.form.attach(u.searchE, 1, 2, 1, 1)
-	u.form.attach(labelNew("Заменить:"), 0, 3, 1, 1)
-	u.form.attach(u.replaceE, 1, 3, 1, 1)
-	u.form.attach(labelNew("Служба:"), 0, 4, 1, 1)
-	u.form.attach(u.serviceE, 1, 4, 1, 1)
-	u.form.attach(labelNew("Команды после:"), 0, 5, 1, 1)
-	u.form.attach(postScroll, 1, 5, 1, 1)
+	u.actionCombo, _ = gtk.ComboBoxTextNew()
+	u.actionCombo.Connect("changed", func() {
+		if u.updatingAct {
+			return
+		}
+	})
+	u.fillActions()
+
+	u.runIfCombo, _ = gtk.ComboBoxTextNew()
+	for _, r := range runIfOptions {
+		u.runIfCombo.AppendText(r.Ru)
+	}
+	u.runIfCombo.SetActive(0)
+	u.runIfCombo.SetTooltipText("Условие выполнения задачи (аналог ignore_errors / when из Ansible)")
 
 	u.rootC, _ = gtk.CheckButtonNewWithLabel("Выполнять с правами root (su)")
-	u.form.attach(u.rootC, 1, 6, 1, 1)
+
+	u.rowLabels = map[string]*gtk.Label{}
+	mkRow := func(key, title string, row int, field gtk.IWidget) {
+		lab := labelNew(title)
+		u.rowLabels[key] = lab
+		u.form.attach(lab, 0, row, 1, 1)
+		u.form.attach(field, 1, row, 1, 1)
+	}
+	lbl0 := labelNew("Источник:")
+	u.srcLabel = lbl0
+	u.form.attach(lbl0, 0, 0, 1, 1)
+	u.form.attach(srcStack, 1, 0, 1, 1)
+	mkRow("dest", "Назначение:", 1, u.destE)
+	mkRow("find", "Найти:", 2, u.searchE)
+	mkRow("repl", "Заменить:", 3, u.replaceE)
+	mkRow("svc", "Служба:", 4, u.serviceE)
+	mkRow("post", "Команды после:", 5, postScroll)
+	mkRow("act", "Действие:", 6, u.actionCombo)
+	mkRow("runif", "Выполнять:", 7, u.runIfCombo)
+	u.form.attach(u.rootC, 1, 8, 1, 1)
 	rightBox.PackStart(u.form.w, false, false, 0)
 
 	formBtns := boxNew(gtk.ORIENTATION_HORIZONTAL, 3)
@@ -163,13 +291,16 @@ func newPlaybookUI() *PlaybookUI {
 	btnAdd.Connect("clicked", func() { u.addOrUpdate(false) })
 	btnApply := buttonNew("Обновить выбранную")
 	btnApply.Connect("clicked", func() { u.addOrUpdate(true) })
+	btnCheck := buttonNew("Проверить синтаксис")
+	btnCheck.SetTooltipText("Проверить кавычки, скобки и парные блоки if/fi, for/do-done, case/esac")
+	btnCheck.Connect("clicked", func() { u.checkSyntax() })
 	formBtns.PackStart(btnAdd, true, true, 0)
 	formBtns.PackStart(btnApply, true, true, 0)
+	formBtns.PackStart(btnCheck, true, true, 0)
 	rightBox.PackStart(formBtns, false, false, 0)
 
-	hint := labelNew("Выберите хосты на вкладке «Хосты». Если ничего не выбрано — задача пойдёт на все видимые хосты.")
-	hsc, _ := hint.GetStyleContext()
-	hsc.AddClass("ramuted")
+	hint := labelNew("Переменные: {{ hostname }} {{ ip }} {{ user }} {{ date }} и свои из «Переменные…»")
+	addClass(hint, "ramuted")
 	hint.SetLineWrap(true)
 	rightBox.PackStart(hint, false, false, 2)
 
@@ -182,15 +313,30 @@ func newPlaybookUI() *PlaybookUI {
 	return u
 }
 
+// fillActions заполняет комбо «Действие» в зависимости от типа задачи.
+func (u *PlaybookUI) fillActions() {
+	u.updatingAct = true
+	defer func() { u.updatingAct = false }()
+	u.actionCombo.RemoveAll()
+	t := u.currentType()
+	switch t {
+	case "service":
+		for _, a := range serviceActions {
+			u.actionCombo.AppendText(a.Ru)
+		}
+		u.actionCombo.SetActive(0)
+	case "package":
+		for _, a := range pkgActions {
+			u.actionCombo.AppendText(a.Ru)
+		}
+		u.actionCombo.SetActive(0)
+	}
+}
+
 func entryNew(placeholder string) *gtk.Entry {
 	e, _ := gtk.EntryNew()
 	e.SetPlaceholderText(placeholder)
 	return e
-}
-
-func tvSet(t *gtk.TextView, height int) {
-	t.SetWrapMode(gtk.WRAP_WORD_CHAR)
-	t.SetSizeRequest(-1, height)
 }
 
 func scrolled(w gtk.IWidget, height int) *gtk.ScrolledWindow {
@@ -204,6 +350,9 @@ func scrolled(w gtk.IWidget, height int) *gtk.ScrolledWindow {
 }
 
 func (u *PlaybookUI) currentType() string {
+	if u.typeCombo == nil {
+		return "command"
+	}
 	return pbTypes[u.typeCombo.GetActive()].Key
 }
 
@@ -217,55 +366,121 @@ func (u *PlaybookUI) setType(t string) {
 	u.typeCombo.SetActive(0)
 }
 
-func (u *PlaybookUI) updateFormVisibility() {
-	t := u.currentType()
-	setRow := func(row int, show bool) {
-		for col := 0; col <= 1; col++ {
-			c, err := u.form.w.GetChildAt(col, row)
-			if err != nil || c == nil {
-				continue
-			}
-			// NB: never assert IWidget to *gtk.Widget — the concrete wrapper is
-			// *gtk.Label/*gtk.Entry/etc. Use the promoted SetVisible method instead.
-			if lv, ok := c.(interface{ SetVisible(bool) }); ok {
-				lv.SetVisible(show)
-			}
+func (u *PlaybookUI) setAction(k string) {
+	list := pkgActions
+	if u.currentType() == "service" {
+		list = serviceActions
+	}
+	for i, a := range list {
+		if a.Key == k {
+			u.actionCombo.SetActive(i)
+			return
 		}
 	}
-	setRow(0, t != "edit")
-	setRow(1, t == "copy" || t == "replace" || t == "replace_with_cmds")
-	setRow(2, t == "edit")
-	setRow(3, t == "edit")
-	setRow(4, t == "edit")
-	setRow(5, t == "replace_with_cmds")
-	// «Обзор…» нужен только там, где источник — локальный файл
-	if u.sourceBtn != nil {
-		u.sourceBtn.SetVisible(t == "script" || t == "copy" || t == "replace" || t == "replace_with_cmds")
+	u.actionCombo.SetActive(0)
+}
+
+func (u *PlaybookUI) currentAction() string {
+	t := u.currentType()
+	idx := u.actionCombo.GetActive()
+	switch t {
+	case "service":
+		if idx >= 0 && idx < len(serviceActions) {
+			return serviceActions[idx].Key
+		}
+	case "package":
+		if idx >= 0 && idx < len(pkgActions) {
+			return pkgActions[idx].Key
+		}
 	}
-	// source row label text
-	if l0, _ := u.form.w.GetChildAt(0, 0); l0 != nil {
-		if l, ok := l0.(*gtk.Label); ok {
-			if t == "command" {
-				l.SetText("Команда:")
-			} else {
-				l.SetText("Источник:")
-			}
+	return ""
+}
+
+func (u *PlaybookUI) currentRunIf() string {
+	idx := u.runIfCombo.GetActive()
+	if idx > 0 && idx < len(runIfOptions) {
+		return runIfOptions[idx].Key
+	}
+	return "always"
+}
+
+func (u *PlaybookUI) setRunIf(k string) {
+	for i, r := range runIfOptions {
+		if r.Key == k {
+			u.runIfCombo.SetActive(i)
+			return
+		}
+	}
+	u.runIfCombo.SetActive(0)
+}
+
+func setVis(w gtk.IWidget, show bool) {
+	if lv, ok := w.(interface{ SetVisible(bool) }); ok {
+		lv.SetVisible(show)
+	}
+}
+
+func (u *PlaybookUI) updateFormVisibility() {
+	t := u.currentType()
+	setVis(u.srcRow, t != "command" && t != "edit")
+	setVis(u.cmdScroll, t == "command")
+	vis := u.rowLabels
+	hideShow := func(key string, show bool) {
+		if l, ok := vis[key]; ok {
+			setVis(l, show)
+		}
+	}
+	copyRow := t == "copy" || t == "replace" || t == "replace_with_cmds"
+	setVis(u.destE, copyRow)
+	hideShow("dest", copyRow)
+	setVis(u.searchE, t == "edit")
+	hideShow("find", t == "edit")
+	setVis(u.replaceE, t == "edit")
+	hideShow("repl", t == "edit")
+	setVis(u.serviceE, t == "edit")
+	hideShow("svc", t == "edit")
+	if par, perr := u.postEd.tv.GetParent(); perr == nil && par != nil {
+		setVis(par, t == "replace_with_cmds")
+	}
+	hideShow("post", t == "replace_with_cmds")
+	actRow := t == "service" || t == "package"
+	setVis(u.actionCombo, actRow)
+	hideShow("act", actRow)
+	u.fillActions()
+	// подпись строки источника по типу задачи
+	if u.srcLabel != nil {
+		switch t {
+		case "command":
+			u.srcLabel.SetText("Команда:")
+		case "service":
+			u.srcLabel.SetText("Служба:")
+		case "package":
+			u.srcLabel.SetText("Пакеты:")
+		default:
+			u.srcLabel.SetText("Источник:")
 		}
 	}
 }
 
+// formToTask собирает задачу из формы.
 func (u *PlaybookUI) formToTask() PlaybookTask {
 	t := PlaybookTask{
 		Type:           u.currentType(),
-		Source:         entText(u.sourceE),
+		Action:         u.currentAction(),
 		Dest:           entText(u.destE),
 		Search:         entText(u.searchE),
 		Replace:        entText(u.replaceE),
 		RestartService: entText(u.serviceE),
 		Root:           u.rootC.GetActive(),
+		RunIf:          u.currentRunIf(),
+	}
+	if t.Type == "command" {
+		t.Source = u.cmdEd.text()
+	} else {
+		t.Source = entText(u.sourceE)
 	}
 	if t.Type == "replace_with_cmds" {
-		s := tvText(u.postE)
+		s := u.postEd.text()
 		for _, line := range strings.Split(s, "\n") {
 			line = strings.TrimSpace(line)
 			if line != "" {
@@ -278,31 +493,41 @@ func (u *PlaybookUI) formToTask() PlaybookTask {
 
 func (u *PlaybookUI) taskToForm(t PlaybookTask) {
 	u.setType(t.Type)
-	u.sourceE.SetText(t.Source)
+	u.setAction(t.Action)
+	if t.Type == "command" {
+		u.cmdEd.setText(t.Source)
+		u.sourceE.SetText("")
+	} else {
+		u.sourceE.SetText(t.Source)
+		u.cmdEd.setText("")
+	}
 	u.destE.SetText(t.Dest)
 	u.searchE.SetText(t.Search)
 	u.replaceE.SetText(t.Replace)
 	u.serviceE.SetText(t.RestartService)
 	u.rootC.SetActive(t.Root)
-	tvSetText(u.postE, strings.Join(t.PostCommands, "\n"))
+	u.setRunIf(t.RunIf)
+	u.postEd.setText(strings.Join(t.PostCommands, "\n"))
 	u.updateFormVisibility()
 }
 
 func (u *PlaybookUI) clearForm() {
 	u.sourceE.SetText("")
+	u.cmdEd.setText("")
 	u.destE.SetText("")
 	u.searchE.SetText("")
 	u.replaceE.SetText("")
 	u.serviceE.SetText("")
 	u.rootC.SetActive(false)
-	tvSetText(u.postE, "")
+	u.runIfCombo.SetActive(0)
+	u.postEd.setText("")
 }
 
 func (u *PlaybookUI) addOrUpdate(update bool) {
 	t := u.formToTask()
 	// validation
 	if t.Type != "edit" && strings.TrimSpace(t.Source) == "" {
-		warnDialog(app.window, "Укажите источник (команду или путь)")
+		warnDialog(app.window, "Укажите источник (команду, службу, пакеты или путь)")
 		return
 	}
 	if (t.Type == "copy" || t.Type == "replace" || t.Type == "replace_with_cmds") && strings.TrimSpace(t.Dest) == "" {
@@ -313,8 +538,12 @@ func (u *PlaybookUI) addOrUpdate(update bool) {
 		warnDialog(app.window, "Для редактирования укажите файл и текст поиска")
 		return
 	}
+	if t.Type == "package" && t.Action != "upgrade" && t.Action != "info" && strings.TrimSpace(t.Source) == "" {
+		warnDialog(app.window, "Укажите пакеты (через пробел или запятую)")
+		return
+	}
 	if update {
-		idx := selectedInt(u.tree, 0)
+		idx := selectedInt(u.tree, pbColNum)
 		if idx < 0 {
 			warnDialog(app.window, "Задача не выбрана")
 			return
@@ -331,7 +560,7 @@ func (u *PlaybookUI) addOrUpdate(update bool) {
 }
 
 func (u *PlaybookUI) removeSelected() {
-	idx := selectedInt(u.tree, 0)
+	idx := selectedInt(u.tree, pbColNum)
 	if idx >= 0 && idx < len(store.State.Playbook) {
 		store.State.Playbook = append(store.State.Playbook[:idx], store.State.Playbook[idx+1:]...)
 		_ = store.Save()
@@ -340,7 +569,7 @@ func (u *PlaybookUI) removeSelected() {
 }
 
 func (u *PlaybookUI) move(dir int) {
-	idx := selectedInt(u.tree, 0)
+	idx := selectedInt(u.tree, pbColNum)
 	j := idx + dir
 	if idx < 0 || j < 0 || j >= len(store.State.Playbook) {
 		return
@@ -349,10 +578,88 @@ func (u *PlaybookUI) move(dir int) {
 	pb[idx], pb[j] = pb[j], pb[idx]
 	_ = store.Save()
 	u.refresh()
+	u.selectRow(j)
+}
+
+func (u *PlaybookUI) selectRow(idx int) {
+	m, ok := anyTreeModel(u.st)
+	if !ok {
+		return
+	}
+	path, err := gtk.TreePathNewFromString(fmt.Sprintf("%d", idx))
+	if err != nil {
+		return
+	}
+	iter, err := m.GetIter(path)
+	if err != nil || iter == nil {
+		return
+	}
+	sel, _ := u.tree.GetSelection()
+	sel.SelectIter(iter)
+}
+
+// dropMove переносит задачу с позиции src на позицию вставки.
+func (u *PlaybookUI) dropMove(srcIdx int, dstPath *gtk.TreePath, pos gtk.TreeViewDropPosition) {
+	tasks := store.State.Playbook
+	if srcIdx < 0 || srcIdx >= len(tasks) {
+		return
+	}
+	insert := len(tasks) - 1 // сброс в пустую область — в конец
+	if dstPath != nil {
+		idxs := dstPath.GetIndices()
+		if len(idxs) > 0 {
+			insert = idxs[0]
+			if pos == gtk.TREE_VIEW_DROP_AFTER || pos == gtk.TREE_VIEW_DROP_INTO_OR_AFTER {
+				insert++
+			}
+		}
+	}
+	if insert > srcIdx {
+		insert--
+	}
+	if insert == srcIdx || insert < 0 {
+		return
+	}
+	t := tasks[srcIdx]
+	tasks = append(tasks[:srcIdx], tasks[srcIdx+1:]...)
+	tasks = append(tasks[:insert], append([]PlaybookTask{t}, tasks[insert:]...)...)
+	store.State.Playbook = tasks
+	_ = store.Save()
+	u.refresh()
+	u.selectRow(insert)
+	logf("info", "↷ Задача перемещена: позиция %d → %d", srcIdx+1, insert+1)
+}
+
+// setupDnD включает перетаскивание задач мышью (источник и приёмник — одно дерево).
+func (u *PlaybookUI) setupDnD() {
+	te, _ := gtk.TargetEntryNew("text/plain", gtk.TARGET_SAME_APP, 0)
+	teVal := *te
+	// COPY: с ACTION_MOVE встроенный обработчик tree-view удаляет строку
+	// из модели ПОСЛЕ нашего refresh() — тот же класс краха, что и в hosts.go.
+	u.tree.DragSourceSet(gdk.BUTTON1_MASK, []gtk.TargetEntry{teVal}, gdk.ACTION_COPY)
+	u.tree.DragDestSet(gtk.DEST_DEFAULT_HIGHLIGHT|gtk.DEST_DEFAULT_MOTION, []gtk.TargetEntry{teVal}, gdk.ACTION_COPY)
+
+	var dropPath *gtk.TreePath
+	var dropPos = gtk.TREE_VIEW_DROP_BEFORE
+	u.tree.Connect("drag-motion", func(tv *gtk.TreeView, _ *gdk.DragContext, x, y int, _ uint32) bool {
+		p, pos := treeViewDestRowAtPosEx(tv, x, y)
+		tv.SetDragDestRow(p, pos)
+		dropPath, dropPos = p, pos
+		return p != nil
+	})
+	u.tree.Connect("drag-drop", func(tv *gtk.TreeView, ctx *gdk.DragContext, _, _ int, tm uint32) bool {
+		// источник — текущее выделение (оно остаётся на перетаскиваемой строке)
+		src := selectedInt(u.tree, pbColNum)
+		path, pos := dropPath, dropPos
+		glibIdle(func() { u.dropMove(src, path, pos) })
+		dragFinish(ctx, true, false, tm)
+		_ = tv
+		return true
+	})
 }
 
 func (u *PlaybookUI) loadSelectedIntoForm() {
-	idx := selectedInt(u.tree, 0)
+	idx := selectedInt(u.tree, pbColNum)
 	if idx >= 0 && idx < len(store.State.Playbook) {
 		u.taskToForm(store.State.Playbook[idx])
 	}
@@ -365,12 +672,191 @@ func (u *PlaybookUI) refresh() {
 	u.st.Clear()
 	for i, t := range store.State.Playbook {
 		iter := u.st.Append()
-		_ = u.st.Set(iter, []int{0, 1}, []interface{}{fmt.Sprintf("%d", i+1), t.Describe()})
+		_ = u.st.Set(iter, []int{pbColNum, pbColDesc, pbColFull},
+			[]interface{}{fmt.Sprintf("%d", i+1), t.Describe(), t.DescribeFull()})
+	}
+	u.updateHostBtn()
+}
+
+// ---------- проверка синтаксиса ----------
+
+// checkSyntax проверяет введённый текст (команда / пост-команды / скрипт)
+// и показывает отчёт.
+func (u *PlaybookUI) checkSyntax() {
+	t := u.currentType()
+	switch t {
+	case "command":
+		src := u.cmdEd.text()
+		problems := checkBashSyntax(src)
+		infoDialog(app.window, syntaxReportText("команда", problems))
+	case "replace_with_cmds":
+		var problems []string
+		for i, line := range strings.Split(u.postEd.text(), "\n") {
+			line = strings.TrimSpace(line)
+			if line == "" {
+				continue
+			}
+			for _, p := range checkBashSyntax(line) {
+				problems = append(problems, fmt.Sprintf("команда %d: %s", i+1, p))
+			}
+		}
+		infoDialog(app.window, syntaxReportText("пост-команды", problems))
+	case "script":
+		fn := entText(u.sourceE)
+		content, err := readScriptPreview(fn)
+		if err != nil {
+			warnDialog(app.window, "Не удалось прочитать скрипт: "+err.Error())
+			return
+		}
+		problems := checkBashSyntax(content)
+		infoDialog(app.window, syntaxReportText(filepath.Base(fn), problems))
+	case "service":
+		if strings.TrimSpace(entText(u.sourceE)) == "" {
+			infoDialog(app.window, "Укажите имя службы (напр. nginx).")
+		} else {
+			infoDialog(app.window, "Проблем не найдено — служба задана.")
+		}
+	case "package":
+		if strings.TrimSpace(entText(u.sourceE)) == "" {
+			infoDialog(app.window, "Укажите пакеты (через пробел или запятую).")
+		} else {
+			infoDialog(app.window, "Проблем не найдено — пакеты заданы.")
+		}
+	default:
+		infoDialog(app.window, "Для этого типа проверка не требуется — заполните поля источника и назначения.")
 	}
 }
 
+// ---------- выбор хостов ----------
+
+// updateHostBtn обновляет подпись кнопки «Цель: …».
+func (u *PlaybookUI) updateHostBtn() {
+	if u.hostBtn == nil {
+		return
+	}
+	n := len(store.State.PlaybookHosts)
+	total := len(store.State.Hosts)
+	switch {
+	case n == 0:
+		u.hostLbl = fmt.Sprintf("Цель: все (%d)", total)
+	case n == 1:
+		u.hostLbl = "Цель: 1 хост"
+	default:
+		u.hostLbl = fmt.Sprintf("Цель: %d хоста(ов)", n)
+	}
+	u.hostBtn.SetLabel(u.hostLbl)
+}
+
+// showHostPicker открывает поповер со списком хостов (галочки).
+func (u *PlaybookUI) showHostPicker() {
+	if u.hostPop != nil {
+		// пересоздаём поповер каждый раз: список хостов мог измениться
+		u.hostPop.Destroy()
+		u.hostPop = nil
+	}
+	pop, err := gtk.PopoverNew(u.hostBtn)
+	if err != nil {
+		return
+	}
+	pop.SetModal(true)
+	box := boxNew(gtk.ORIENTATION_VERTICAL, 2)
+	box.SetMarginStart(8)
+	box.SetMarginEnd(8)
+	box.SetMarginTop(6)
+	box.SetMarginBottom(6)
+
+	head := labelNew("Хосты для запуска плейбука")
+	addClass(head, "ratitle")
+	head.SetXAlign(0)
+	box.PackStart(head, false, false, 2)
+
+	selected := map[string]bool{}
+	for _, ip := range store.State.PlaybookHosts {
+		selected[ip] = true
+	}
+
+	var checks []*gtk.CheckButton
+	scroll := boxNew(gtk.ORIENTATION_VERTICAL, 1)
+	for _, h := range store.State.Hosts {
+		ip := h.IP
+		cb, _ := gtk.CheckButtonNewWithLabel(h.DisplayName() + "  (" + ip + ")")
+		cb.SetActive(selected[ip])
+		cb.Connect("toggled", func() {
+			if cb.GetActive() {
+				selected[ip] = true
+			} else {
+				delete(selected, ip)
+			}
+		})
+		checks = append(checks, cb)
+		scroll.PackStart(cb, false, false, 0)
+	}
+	if len(store.State.Hosts) == 0 {
+		box.PackStart(labelNew("Список хостов пуст"), false, false, 2)
+	}
+	scs, _ := gtk.ScrolledWindowNew(nil, nil)
+	scs.SetPolicy(gtk.POLICY_AUTOMATIC, gtk.POLICY_AUTOMATIC)
+	scs.Add(scroll)
+	scs.SetSizeRequest(300, 260)
+	box.PackStart(scs, true, true, 2)
+
+	btnRow := boxNew(gtk.ORIENTATION_HORIZONTAL, 3)
+	btnAll := buttonNew("Выбрать все")
+	btnAll.Connect("clicked", func() {
+		for _, cb := range checks {
+			cb.SetActive(true)
+		}
+	})
+	btnNone := buttonNew("Снять все")
+	btnNone.Connect("clicked", func() {
+		for _, cb := range checks {
+			cb.SetActive(false)
+		}
+	})
+	btnOK := buttonNew("Готово")
+	sOK, _ := btnOK.GetStyleContext()
+	sOK.AddClass("suggested")
+	btnOK.Connect("clicked", func() {
+		var ips []string
+		for _, h := range store.State.Hosts {
+			if selected[h.IP] {
+				ips = append(ips, h.IP)
+			}
+		}
+		store.State.PlaybookHosts = ips
+		_ = store.Save()
+		u.updateHostBtn()
+		pop.Popdown()
+	})
+	btnRow.PackStart(btnAll, true, true, 0)
+	btnRow.PackStart(btnNone, true, true, 0)
+	btnRow.PackStart(btnOK, true, true, 0)
+	box.PackStart(btnRow, false, false, 2)
+
+	box.ShowAll()
+	pop.Add(box)
+	u.hostPop = pop
+	pop.Popup()
+}
+
+// targetHostsForPlaybook — выбранные в плейбуке хосты или все видимые.
+func (u *PlaybookUI) targetHostsForPlaybook() []string {
+	if len(store.State.PlaybookHosts) > 0 {
+		var out []string
+		for _, ip := range store.State.PlaybookHosts {
+			if store.FindHost(ip) != nil {
+				out = append(out, ip)
+			}
+		}
+		if len(out) > 0 {
+			return out
+		}
+	}
+	return app.hostsUI.targetHosts()
+}
+
 func (u *PlaybookUI) runPlaybook() {
-	ips := app.hostsUI.targetHosts()
+	ips := u.targetHostsForPlaybook()
 	if len(ips) == 0 {
 		warnDialog(app.window, "Нет хостов для выполнения")
 		return
@@ -392,7 +878,11 @@ func (u *PlaybookUI) runPlaybook() {
 	}
 	tasks := make([]PlaybookTask, len(store.State.Playbook))
 	copy(tasks, store.State.Playbook)
-	logf("accent", "🚀 Playbook: %d задач на %d хост(ов)", len(tasks), len(ips))
+	mode := "стоп при ошибке"
+	if store.State.PlaybookContinueOnError {
+		mode = "продолжение при ошибке"
+	}
+	logf("accent", "🚀 Playbook: %d задач на %d хост(ов), %s", len(tasks), len(ips), mode)
 	go runPlaybookOnHosts(ips, tasks, "Playbook")
 }
 
@@ -428,8 +918,10 @@ func (u *PlaybookUI) saveAsTemplate() {
 	logf("ok", "💾 Шаблон «%s» сохранён (%d задач)", name, len(store.State.Playbook))
 }
 
-// runPlaybookOnHosts executes a task list sequentially on each host (parallel across hosts).
+// runPlaybookOnHosts executes a task list sequentially on each host (parallel
+// across hosts). Учитывает условие выполнения (RunIf) и политику ошибок.
 func runPlaybookOnHosts(ips []string, tasks []PlaybookTask, label string) {
+	continueOnError := store.State.PlaybookContinueOnError
 	runParallel(ips, label, func(ip string) (string, error) {
 		creds := buildCreds(ip)
 		cl, err := Connect(creds)
@@ -438,15 +930,35 @@ func runPlaybookOnHosts(ips []string, tasks []PlaybookTask, label string) {
 		}
 		defer cl.Close()
 		var logAll strings.Builder
-		for i, t := range tasks {
+		prevErr := false
+		var firstErr error
+		for i, raw := range tasks {
+			// подстановка переменных {{ var }} с учётом хоста
+			t := store.expandTaskVars(ip, raw)
+			// условие выполнения задачи
+			if t.RunIf == "on_success" && prevErr {
+				logAll.WriteString(fmt.Sprintf("[%d/%d] %s — ПРОПУЩЕНО (нужна успешная предыдущая)\n", i+1, len(tasks), t.Describe()))
+				continue
+			}
+			if t.RunIf == "on_failure" && !prevErr {
+				logAll.WriteString(fmt.Sprintf("[%d/%d] %s — ПРОПУЩЕНО (нужна ошибочная предыдущая)\n", i+1, len(tasks), t.Describe()))
+				continue
+			}
 			out, err := execTask(cl, ip, t, creds)
 			logAll.WriteString(fmt.Sprintf("[%d/%d] %s\n%s\n", i+1, len(tasks), t.Describe(), strings.TrimSpace(out)))
 			if err != nil {
+				firstErr = fmt.Errorf("задача %d (%s): %v", i+1, t.Describe(), err)
+				prevErr = true
 				logAll.WriteString(fmt.Sprintf("ОШИБКА: %v\n", err))
-				return logAll.String(), fmt.Errorf("задача %d (%s): %v", i+1, t.Describe(), err)
+				if !continueOnError {
+					return logAll.String(), firstErr
+				}
+				logAll.WriteString("(продолжено: включён режим «продолжать при ошибке»)\n")
+				continue
 			}
+			prevErr = false
 		}
-		return logAll.String(), nil
+		return logAll.String(), firstErr
 	})
 }
 
@@ -467,8 +979,20 @@ func execTask(cl *ssh.Client, ip string, t PlaybookTask, creds SSHCreds) (string
 	case "command":
 		return run(t.Source)
 	case "script":
+		// скрипт читаем локально, подставляем переменные {{ var }} для хоста,
+		// грузим во временный файл и выполняем
+		content, err := os.ReadFile(t.Source)
+		if err != nil {
+			return "", fmt.Errorf("скрипт недоступен: %v", err)
+		}
+		expanded := store.expandVars(ip, string(content))
+		tmpLocal := filepath.Join(os.TempDir(), fmt.Sprintf(".ra_scr_%d_%d.sh", os.Getpid(), time.Now().UnixNano()%100000))
+		if err := os.WriteFile(tmpLocal, []byte(expanded), 0755); err != nil {
+			return "", err
+		}
+		defer os.Remove(tmpLocal)
 		tmp := fmt.Sprintf("/tmp/.ra_pb_%d.sh", nowMs())
-		if err := uploadThenSuRoot(cl, t.Source, tmp, rootPassFor(creds, root), timeout); err != nil {
+		if err := uploadThenSuRoot(cl, tmpLocal, tmp, rootPassFor(creds, root), timeout); err != nil {
 			return "", err
 		}
 		defer Exec(cl, "rm -f "+shellQuote(tmp), 15)
@@ -526,6 +1050,66 @@ func execTask(cl *ssh.Client, ip string, t PlaybookTask, creds SSHCreds) (string
 				return out, fmt.Errorf("restart %s: %w", t.RestartService, err)
 			}
 			out += fmt.Sprintf("\nслужба %s перезапущена", t.RestartService)
+		}
+		return out, nil
+	case "service":
+		if strings.TrimSpace(t.Source) == "" {
+			return "", fmt.Errorf("укажите имя службы")
+		}
+		act := t.Action
+		if act == "" {
+			act = "restart"
+		}
+		out, err := run("systemctl " + act + " " + shellQuote(t.Source))
+		if err != nil {
+			return out, fmt.Errorf("systemctl %s %s: %v", act, t.Source, err)
+		}
+		if strings.TrimSpace(out) == "" {
+			out = fmt.Sprintf("служба %s: %s — выполнено", t.Source, serviceActionRu(act))
+		}
+		return out, nil
+	case "package":
+		if strings.TrimSpace(t.Source) == "" {
+			return "", fmt.Errorf("укажите пакеты")
+		}
+		act := t.Action
+		if act == "" {
+			act = "install"
+		}
+		pkgs := strings.Fields(strings.ReplaceAll(t.Source, ",", " "))
+		quoted := make([]string, len(pkgs))
+		for i, p := range pkgs {
+			quoted[i] = shellQuote(p)
+		}
+		pkgList := strings.Join(quoted, " ")
+		// определяем менеджер пакетов: dnf (РЕД ОС) → yum → apt-get
+		mgrOut, _ := run("(command -v dnf >/dev/null 2>&1 && echo dnf) || (command -v yum >/dev/null 2>&1 && echo yum) || (command -v apt-get >/dev/null 2>&1 && echo apt-get) || echo dnf")
+		mgr := strings.TrimSpace(mgrOut)
+		if mgr == "" {
+			mgr = "dnf"
+		}
+		var cmd string
+		switch {
+		case mgr == "apt-get" && act == "remove":
+			cmd = "DEBIAN_FRONTEND=noninteractive apt-get -y remove " + pkgList
+		case mgr == "apt-get" && act == "upgrade":
+			cmd = "DEBIAN_FRONTEND=noninteractive apt-get -y upgrade"
+		case mgr == "apt-get" && act == "info":
+			cmd = "apt-cache show " + pkgList + " 2>/dev/null | head -20"
+		case mgr == "apt-get":
+			cmd = "DEBIAN_FRONTEND=noninteractive apt-get -y install " + pkgList
+		case act == "remove":
+			cmd = mgr + " -y remove " + pkgList
+		case act == "upgrade":
+			cmd = mgr + " -y upgrade"
+		case act == "info":
+			cmd = mgr + " info " + pkgList
+		default:
+			cmd = mgr + " -y install " + pkgList
+		}
+		out, err := run(cmd)
+		if err != nil {
+			return out, fmt.Errorf("%s %s %s: %v", mgr, act, t.Source, err)
 		}
 		return out, nil
 	}

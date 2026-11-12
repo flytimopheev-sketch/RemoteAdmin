@@ -58,6 +58,12 @@ func tvSetText(t *gtk.TextView, s string) {
 	buf.SetText(s)
 }
 
+// tvSet — размер и перенос строк TextView (высота в px).
+func tvSet(t *gtk.TextView, height int) {
+	t.SetWrapMode(gtk.WRAP_WORD_CHAR)
+	t.SetSizeRequest(-1, height)
+}
+
 // msgDialog shows a modal message dialog, returns response code.
 func msgDialog(parent *gtk.Window, typ gtk.DialogFlags, mtype gtk.MessageType, buttons gtk.ButtonsType, text string) (gtk.ResponseType, *gtk.MessageDialog) {
 	var parentWin gtk.IWindow
