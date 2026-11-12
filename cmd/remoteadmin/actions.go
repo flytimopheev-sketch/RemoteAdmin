@@ -117,10 +117,11 @@ func runParallel(ips []string, taskName string, fn func(ip string) (string, erro
                                 }
                                 d, t := completed, len(ips)
                                 mu.Unlock()
+                                out = redactSecrets(out) // секреты не должны попадать в журнал/хранилище
                                 addReport(taskName, ip, st, out)
                                 store.State.LastOutput[ip] = out
-                                // per-host log line; failures carry the reason so it is
-                                // immediately clear what broke where
+                                // цвет строки = результат: зелёный OK / красный FAIL /
+                                // жёлтый WARN; двойной щелчок — полный вывод команды
                                 line := fmt.Sprintf("%s %s → %s", statusEmoji(st), ip, st)
                                 if err != nil {
                                         line += " — " + truncateOut(err.Error(), 140)
@@ -132,7 +133,19 @@ func runParallel(ips []string, taskName string, fn func(ip string) (string, erro
                                                 }
                                         }
                                 }
-                                logf("info", "%s", line)
+                                kind := "ok"
+                                switch st {
+                                case "FAIL":
+                                        kind = "fail"
+                                case "WARN":
+                                        kind = "warn"
+                                }
+                                logfDetail(kind, "%s", &LogDetail{
+                                        Task:   taskName,
+                                        Host:   ip,
+                                        Status: st,
+                                        Output: out,
+                                }, line)
                                 glibIdle(func() {
                                         app.hostsUI.updateStatusRow(ip, status)
                                         app.setProgress(d, t)

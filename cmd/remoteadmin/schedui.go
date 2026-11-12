@@ -1,7 +1,7 @@
 package main
 
 import (
-	"time"
+        "time"
 
         "fmt"
         "strings"
@@ -100,7 +100,17 @@ func (u *SchedUI) refresh() {
 }
 
 func (u *SchedUI) addDialog() {
-        u.editDialog(nil)
+        u.editDialogPrefill(nil, "")
+}
+
+// editDialogPrefill — диалог расписания с предвыбранным шаблоном
+// (используется кнопкой «⏰ Запланировать» на вкладке «Плейбук»).
+func (u *SchedUI) editDialogPrefill(orig *Schedule, prefillTpl string) {
+        u.editDialogImpl(orig, prefillTpl)
+}
+
+func (u *SchedUI) editDialog(orig *Schedule) {
+        u.editDialogImpl(orig, "")
 }
 
 func (u *SchedUI) editSelected() {
@@ -117,8 +127,8 @@ func (u *SchedUI) editSelected() {
         }
 }
 
-// editDialog — создание/правка одного расписания.
-func (u *SchedUI) editDialog(orig *Schedule) {
+// editDialogImpl — создание/правка одного расписания.
+func (u *SchedUI) editDialogImpl(orig *Schedule, prefillTpl string) {
         isNew := orig == nil
         d, err := gtk.DialogNewWithButtons(
                 map[bool]string{true: "Новое расписание", false: "Изменить расписание"}[isNew],
@@ -172,6 +182,14 @@ func (u *SchedUI) editDialog(orig *Schedule) {
         if orig != nil {
                 for i, t := range tpls {
                         if t == orig.Template {
+                                cTpl.SetActive(i)
+                        }
+                }
+        }
+        // предвыбор шаблона от кнопки «⏰ Запланировать» (вкладка «Плейбук»)
+        if prefillTpl != "" {
+                for i, t := range tpls {
+                        if t == prefillTpl {
                                 cTpl.SetActive(i)
                         }
                 }

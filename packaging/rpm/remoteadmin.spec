@@ -1,9 +1,9 @@
 Name:           remoteadmin
-Version:        1.7.0
+Version:        1.8.0
 Release:        1%{?dist}
 Summary:        Современный SSH-менеджер группы хостов (GTK3)
 License:        MIT
-URL:            https://github.com/remoteadmin-app/RemoteAdmin
+URL:            https://github.com/flytimopheev-sketch/RemoteAdmin
 Source0:        %{name}-%{version}.tar.gz
 
 Requires:       gtk3 >= 3.24, openssh-clients
@@ -20,14 +20,18 @@ AutoReqProv:    no
 
 %description
 Бескаркасное полупрозрачное GTK3-приложение для массового управления
-хостами по SSH: playbook-задачи, библиотека шаблонов, цепочки задач
-с откатом (rollback), планировщик, мониторинг CPU/RAM/дисков с алертами
-и графиком за период, двухпанельный SFTP-менеджер, мульти-терминал
-(ClusterSSH) с ANSI-цветами и выбором получателей команд, цветная
-статистика выполнения в журнале с экспортом HTML/CSV/PDF, webhook-
-и e-mail-уведомления, восстановление последней сессии.
-Пароли шифруются AES-256-GCM, ключи хостов проверяются по known_hosts,
-хранилище может быть зашифровано мастер-паролем.
+хостами по SSH: playbook-задачи (8 типов, drag-and-drop, переменные
+{{ var }}, менеджер секретов {{ secret:имя }}, проверка синтаксиса bash),
+библиотека шаблонов, цепочки задач с откатом (rollback), планировщик
+cron, мониторинг CPU/RAM/дисков с алертами и графиком за период,
+двухпанельный SFTP-менеджер, мульти-терминал (ClusterSSH) с ANSI-цветами
+и выбором получателей команд, журнал с развёртыванием вывода любой команды
+(stdout/stderr по каждому хосту) и цветовым кодированием (зелёный — успех,
+красный — ошибка, жёлтый — предупреждение), экспорт HTML/CSV/PDF,
+webhook- и e-mail-уведомления, восстановление последней сессии.
+Пароли и секреты шифруются AES-256-GCM (опционально весь файл —
+мастер-паролем), в журнал секреты не попадают (маскируются),
+ключи хостов проверяются по known_hosts.
 
 %prep
 %setup -q -n %{name}-%{version}
@@ -37,10 +41,11 @@ source $HOME/env.sh 2>/dev/null || true
 export PATH=$HOME/toolchain/go/bin:$PATH
 export GOPATH=$HOME/go
 export GOPROXY=off
+export GOFLAGS=-mod=vendor
 export PKG_CONFIG_PATH=$HOME/envcfg/pkgconfig:$HOME/gtkroot/usr/lib/x86_64-linux-gnu/pkgconfig:$HOME/gtkroot/usr/lib/pkgconfig:$HOME/gtkroot/usr/share/pkgconfig:/usr/lib/x86_64-linux-gnu/pkgconfig:/usr/share/pkgconfig
 export CGO_LDFLAGS="-L$HOME/gtkroot/usr/lib/x86_64-linux-gnu"
-go build -trimpath -ldflags "-s -w" -o remoteadmin .
-go run genicon.go icon.png
+go build -trimpath -ldflags "-s -w" -o remoteadmin ./cmd/remoteadmin
+go run scripts/genicon.go icon.png
 
 %install
 rm -rf %{buildroot}
@@ -68,6 +73,27 @@ DESK
 %{_datadir}/icons/hicolor/128x128/apps/remoteadmin.png
 
 %changelog
+* Thu Nov 12 2026 RemoteAdmin <admin@remoteadmin.local> 1.8.0-1
+- Журнал: цветовое кодирование по результату — зелёный успех,
+  красный ошибка, жёлтый предупреждение (строки лога и дерево журнала)
+- Журнал: двойной щелчок по строке хоста — «развёрнутая» запись
+  с ПОЛНЫМ выводом команды (stdout/stderr) на этом хосте; то же
+  двойным щелчком по записи журнала; кнопка «Копировать»
+- Секреты: встроенный менеджер секретов (кнопка «🔐 Секреты…»);
+  значения шифруются AES-256-GCM, подставляются по {{ secret:имя }}
+  только в момент запуска; в журнал/отчёты секреты и пароли не пишутся
+  (маскируются «••••••»); SSH- и root-пароли по-прежнему хранятся
+  только в зашифрованном виде, шифрование всего файла мастер-паролем
+  остаётся опцией
+- Плейбук: «🗑 Очистить всё» убрана от кнопки запуска — иконка корзины
+  в панели инструментов списка + подтверждение с числом задач
+- Плейбук: кнопка «⏰ Запланировать» рядом с «Запустить playbook» —
+  создаёт шаблон из текущего плейбука и открывает диалог расписания
+  с выбранным шаблоном (cron, группа хостов, пресеты)
+- Повышение до root: ошибка su (неверный пароль, ненулевой код)
+  больше не глотается — задача честно помечается FAIL
+- Структура репозитория приведена к стандартной: cmd/remoteadmin,
+  assets, docs, packaging/rpm, scripts; Makefile, обновлён CI
 * Wed Nov 11 2026 RemoteAdmin <admin@remoteadmin.local> 1.7.0-1
 - Журнал: правая панель задачи полностью переоформлена — крупный заголовок,
   цветной бейдж статуса (OK/FAIL/WARN), метаданные приглушены, вывод

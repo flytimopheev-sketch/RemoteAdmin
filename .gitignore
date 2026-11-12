@@ -1,6 +1,7 @@
-# бинарник и артефакты сборки
+# артефакты сборки
 /remoteadmin
 /remoteadmin.exe
+/icon.png
 *.AppImage
 *.deb
 *.rpm

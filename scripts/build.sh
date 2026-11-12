@@ -1,9 +1,9 @@
 #!/bin/bash
-# RemoteAdmin 1.7.0 build script
+# RemoteAdmin 1.8.0 build script
 # Builds: linux binary, RPM (РЕД ОС 8), .deb (Astra/Debian), AppImage
 set -e
-cd "$(dirname "$0")"
-export VERSION=1.7.0
+cd "$(dirname "$0")/.."   # repo root
+export VERSION=1.8.0
 export RELEASE=1
 export PATH="$HOME/rpmroot/usr/bin:$PATH"
 export PKGNAME=remoteadmin
@@ -11,13 +11,14 @@ export BUILDDIR=${BUILDDIR:-$HOME/rpmroot}
 export OUT=${OUT:-/home/z/my-project/download}
 
 source "$HOME/env.sh" 2>/dev/null || true
+export GOFLAGS=-mod=vendor
 
 echo "== 1. Icon =="
-go run genicon.go icon.png 2>/dev/null || go run genicon.go /tmp/icon.png
-[ -f icon.png ] || cp /tmp/icon.png icon.png
+go run scripts/genicon.go icon.png 2>/dev/null || go run scripts/genicon.go /tmp/icon.png
+[ -f icon.png ] || cp assets/icon.png icon.png
 
 echo "== 2. Binary =="
-CGO_ENABLED=1 go build -trimpath -ldflags "-s -w" -o remoteadmin .
+CGO_ENABLED=1 go build -trimpath -ldflags "-s -w" -o remoteadmin ./cmd/remoteadmin
 
 echo "== 3. RPM =="
 rm -rf "$BUILDDIR"/{BUILD,BUILDROOT,RPMS,SOURCES,SPECS,SRPMS}
@@ -28,7 +29,7 @@ tar --exclude='remoteadmin/.git' --exclude='remoteadmin/remoteadmin' --exclude='
 LD_LIBRARY_PATH="$HOME/rpmroot/usr/lib/x86_64-linux-gnu" RPM_CONFIGDIR="$HOME/rpmroot/usr/lib/rpm" "$HOME/rpmroot/usr/bin/rpmbuild" -ba --define "_topdir $BUILDDIR" \
   --define "_dbpath $BUILDDIR/rpmdb" --define "_rpmconfigdir $HOME/rpmroot/usr/lib/rpm" \
   --define "pkgname $PKGNAME" --define "version $VERSION" --define "release $RELEASE" \
-  remoteadmin.spec 2>&1 | tail -3
+  packaging/rpm/remoteadmin.spec 2>&1 | tail -3
 RPM=$(ls "$BUILDDIR"/RPMS/x86_64/${PKGNAME}-${VERSION}-*.x86_64.rpm | head -1)
 cp "$RPM" "$OUT/"
 echo "RPM: $RPM"

@@ -75,8 +75,26 @@ func newReportsUI() *ReportsUI {
         // NB: the 5th (hidden) column carries the row index into reports;
         // it MUST exist in the model or selection clicks break (previously
         // caused Gtk-CRITICAL and a wrong detail pane).
-        u.tree, u.st = makeTree([]string{"Время", "Задача", "Хост", "Статус", ""},
-                []glib.Type{glib.TYPE_STRING, glib.TYPE_STRING, glib.TYPE_STRING, glib.TYPE_STRING, glib.TYPE_STRING})
+        // Статус — Pango-markup: зелёный OK / красный FAIL / жёлтый WARN.
+        u.tree, u.st = makeTreeM([]string{"Время", "Задача", "Хост", "Статус", ""},
+                []glib.Type{glib.TYPE_STRING, glib.TYPE_STRING, glib.TYPE_STRING, glib.TYPE_STRING, glib.TYPE_STRING},
+                map[int]bool{RCOL_STAT: true})
+        // двойной щелчок — «развёрнутая» запись: полный вывод команды
+        u.tree.Connect("button-press-event", func(_ *gtk.TreeView, ev *gdk.Event) bool {
+                eb := gdk.EventButtonNewFromEvent(ev)
+                if eb.Type() != gdk.EVENT_2BUTTON_PRESS || eb.Button() != 1 {
+                        return false
+                }
+                idx := u.selectedIndex()
+                if idx < 0 || idx >= len(store.State.Reports) {
+                        return false
+                }
+                r := store.State.Reports[idx]
+                showOutputDialog(r.Task+" — "+r.Host, &LogDetail{
+                        Task: r.Task, Host: r.Host, Status: r.Status, Time: r.Time, Output: r.Output,
+                })
+                return false
+        })
         hideCol(u.tree, RCOL_IDX)
         sel, _ := u.tree.GetSelection()
         sel.Connect("changed", func() { u.showDetail() })
@@ -131,7 +149,7 @@ func (u *ReportsUI) refresh() {
                 }
                 iter := u.st.Append()
                 _ = u.st.Set(iter, []int{RCOL_TIME, RCOL_TASK, RCOL_HOST, RCOL_STAT, RCOL_IDX},
-                        []interface{}{r.Time, r.Task, r.Host, statusEmoji(r.Status) + " " + r.Status, fmt.Sprintf("%d", i)})
+                        []interface{}{r.Time, r.Task, r.Host, statusMarkup(r.Status), fmt.Sprintf("%d", i)})
         }
         if u.detail != nil {
                 tvSetText(u.detail, "")
