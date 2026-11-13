@@ -22,6 +22,7 @@ type application struct {
         headerSub   *gtk.Label
         imgTheme    *gtk.Image
         pages       *gtk.Stack
+        execSplit   *gtk.Paned // вертикальный разделитель «страницы ↔ нижняя панель»
         navBtns     map[string]*gtk.Button
         navIcons    map[string]*gtk.Image
         active      string
@@ -392,13 +393,23 @@ type panedRef struct {
 
 // makeHPaned — горизонтальный разделитель с сохранением положения.
 func makeHPaned(name string, left, right gtk.IWidget, defPos int) *gtk.Paned {
-        p, err := gtk.PanedNew(gtk.ORIENTATION_HORIZONTAL)
+        return makePaned(gtk.ORIENTATION_HORIZONTAL, name, left, right, defPos)
+}
+
+// makeVPaned — вертикальный разделитель (высота панелей регулируется
+// мышью и запоминается между сеансами).
+func makeVPaned(name string, top, bottom gtk.IWidget, defPos int) *gtk.Paned {
+        return makePaned(gtk.ORIENTATION_VERTICAL, name, top, bottom, defPos)
+}
+
+func makePaned(orient gtk.Orientation, name string, c1, c2 gtk.IWidget, defPos int) *gtk.Paned {
+        p, err := gtk.PanedNew(orient)
         if err != nil {
                 return nil
         }
         addClass(p, "rapaned")
-        p.Pack1(left, true, false)
-        p.Pack2(right, true, false)
+        p.Pack1(c1, true, false)
+        p.Pack2(c2, true, false)
         panedRegistry = append(panedRegistry, panedRef{name: name, p: p, def: defPos})
         return p
 }
@@ -406,15 +417,34 @@ func makeHPaned(name string, left, right gtk.IWidget, defPos int) *gtk.Paned {
 // restorePanedPositions применяется после ShowAll: до первого выделения
 // GTK ограничивает позицию выделением детей.
 func restorePanedPositions() {
-        for _, r := range panedRegistry {
-                pos := store.State.Session.panedPos(r.name)
-                if pos <= 0 {
-                        pos = r.def
-                }
-                if pos > 0 {
-                        r.p.SetPosition(pos)
+        apply := func() {
+                for _, r := range panedRegistry {
+                        pos := store.State.Session.panedPos(r.name)
+                        if pos <= 0 {
+                                pos = r.def
+                                // Нижняя панель «Выполнение/Вывод/События»: по умолчанию
+                                // ей отдаётся ~260 px, остальное — рабочая вкладка.
+                                if r.name == "execbar" && app != nil && app.window != nil {
+                                        _, wh := app.window.GetSize()
+                                        if wh >= 700 {
+                                                pos = wh - 260
+                                        } else {
+                                                pos = wh * 2 / 3
+                                        }
+                                }
+                        }
+                        if pos > 0 {
+                                r.p.SetPosition(pos)
+                        }
                 }
         }
+        // NB: сразу после ShowAll аллокации ещё не устоялись, и GTK подрезает
+        // позиции до минимумов детей; повтор через 120 мс фиксирует их точно.
+        apply()
+        glibTimeout(120, func() bool {
+                apply()
+                return false
+        })
 }
 
 // savePanedPositions запоминает текущие положения разделителей в сессию.
@@ -825,15 +855,44 @@ func buildApp(selftest bool) error {
         }
         app = &application{window: win, navBtns: map[string]*gtk.Button{}, navIcons: map[string]*gtk.Image{}}
         win.SetTitle(AppName + " " + AppVersion)
-        win.SetDefaultSize(1180, 700)
-        win.SetSizeRequest(960, 560) // можно уменьшать, но не до бесформенности
+        // NB: размер по умолчанию подстраивается под экран. Раньше окно
+        // всегда открывалось 1180×700 и на ноутбуках с невысоким экраном
+        // уходило за нижний край — панель «Выполнение/Вывод/События»
+        // оставалась за границей рабочего стола.
+        defW, defH := 1180, 700
+        if scr := win.GetScreen(); scr != nil {
+                if rw, rerr := scr.GetRootWindow(); rerr == nil && rw != nil {
+                        sw, sh := rw.WindowGetWidth(), rw.WindowGetHeight()
+                        if sw > 100 {
+                                defW = 1180
+                                if defW > sw-60 {
+                                        defW = sw - 60
+                                }
+                        }
+                        if sh > 150 {
+                                defH = 700
+                                if defH > sh-140 {
+                                        defH = sh - 140
+                                }
+                        }
+                }
+        }
+        if defW < 960 {
+                defW = 960
+        }
+        if defH < 560 {
+                defH = 560
+        }
+        win.SetDefaultSize(defW, defH)
+        win.SetSizeRequest(880, 520) // можно уменьшать, но не до бесформенности
         win.SetDecorated(false)
         win.SetAppPaintable(true)
         win.SetPosition(gtk.WIN_POS_CENTER)
 
-        screen := win.GetScreen()
-        if visual, err := screen.GetRGBAVisual(); err == nil && visual != nil {
-                win.SetVisual(visual)
+        if screen := win.GetScreen(); screen != nil {
+                if visual, err := screen.GetRGBAVisual(); err == nil && visual != nil {
+                        win.SetVisual(visual)
+                }
         }
         applyTheme(win)
 
@@ -897,9 +956,26 @@ func buildApp(selftest bool) error {
         app.pages.SetMarginEnd(10)
         app.pages.SetMarginTop(10)
         app.pages.SetMarginBottom(6)
-        main.PackStart(app.pages, true, true, 0)
 
-        content.PackStart(buildExecBar(), false, false, 0)
+        // Нижняя панель «Выполнение / Вывод / События» — теперь вертикальная
+        // раздвижная область: её высоту можно потянуть мышью, положение
+        // запоминается. Гарантированная минимальная высота — 170 px, поэтому
+        // панель всегда видна снизу, а не «уезжает» за экран.
+        execW := buildExecBar()
+        execW.ToWidget().SetSizeRequest(-1, 170)
+        // Страницы оборачиваются в прокрутку: иначе минимальный размер
+        // контента раздувает окно выше экрана (на Windows-ноутбуках
+        // 1366x768 нижняя панель «Выполнение/Вывод/События» целиком
+        // уезжала за край — главная жалоба 1.10.0). Теперь окно всегда
+        // открывается в запрошенных рамках, а слишком высокий контент
+        // страницы прокручивается внутри.
+        psc, _ := gtk.ScrolledWindowNew(nil, nil)
+        psc.SetPolicy(gtk.POLICY_AUTOMATIC, gtk.POLICY_AUTOMATIC)
+        psc.SetMinContentWidth(920)
+        psc.SetMinContentHeight(300)
+        psc.Add(app.pages)
+        app.execSplit = makeVPaned("execbar", psc, execW, 460)
+        main.PackStart(app.execSplit, true, true, 0)
         content.PackStart(buildStatusBar(), false, false, 0)
 
         mid.PackEnd(edgeStrip("right"), false, false, 0)
@@ -1073,6 +1149,19 @@ func (a *application) restoreSession(selftest bool) {
                 a.maximized = true
                 a.window.Maximize()
         }
+        // RA_SHOT_GEOM=ШИРxВЫС — фиксированный размер окна (для скриншотов
+        // руководства: под Xvfb нет оконного менеджера, и сохранённая с
+        // большого монитора геометрия «вывалится» за экран). Применяем
+        // ПОСЛЕ восстановления сессии — иначе оно перебивается.
+        if gs := os.Getenv("RA_SHOT_GEOM"); gs != "" {
+                var gw, gh int
+                if _, err := fmt.Sscanf(gs, "%dx%d", &gw, &gh); err == nil && gw >= 800 && gh >= 500 {
+                        a.maximized = false
+                        a.window.Unmaximize()
+                        a.window.Resize(gw, gh)
+                        a.window.Move(20, 20)
+                }
+        }
         if s.Nav != "" {
                 for _, it := range navItems {
                         if it.id == s.Nav {
@@ -1090,3 +1179,4 @@ func fileExists(p string) bool {
         _, err := os.Stat(p)
         return err == nil
 }
+

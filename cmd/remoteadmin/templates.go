@@ -16,12 +16,13 @@ import (
 //   - готовые пресеты при первом запуске,
 //   - «Новый шаблон» (пустой шаблон с первой командой),
 //   - «Создать из Плейбука» (сохранить текущий список задач),
+//   - редактирование имени/описания и состава задач (v1.11.0),
 //   - запуск на выбранных хостах и загрузка в Плейбук для правок.
 type TemplatesUI struct {
         widget gtk.IWidget
         tree   *gtk.TreeView
         st     *gtk.ListStore
-        detail *gtk.Label
+        detail *gtk.TextView
 }
 
 const (
@@ -195,14 +196,49 @@ func newTemplatesUI() *TemplatesUI {
         createRow.PackStart(btnFromPb, true, true, 0)
         leftBox.PackStart(createRow, false, false, 0)
 
+        editRow := boxNew(gtk.ORIENTATION_HORIZONTAL, 3)
+        btnEdit := buttonNew("Редактировать шаблон")
+        btnEdit.SetTooltipText("Изменить имя, описание и задачи выбранного шаблона\n(двойной щелчок по шаблону в списке — то же самое)")
+        btnEdit.Connect("clicked", func() { u.editSelected() })
+        editRow.PackStart(btnEdit, true, true, 0)
+        leftBox.PackStart(editRow, false, false, 0)
+
+        // двойной щелчок — редактирование
+        u.tree.Connect("button-press-event", func(_ *gtk.TreeView, ev *gdk.Event) bool {
+                eb := gdk.EventButtonNewFromEvent(ev)
+                if eb.Type() == gdk.EVENT_2BUTTON_PRESS && eb.Button() == 1 {
+                        u.editSelected()
+                        return true
+                }
+                return false
+        })
+
         lists.PackStart(leftCard, true, true, 0)
 
         // ---- right: composition ----
         rightCard, rightBox := cardBox("Состав шаблона")
-        u.detail = labelNew("Выберите шаблон слева — здесь появится список его задач.")
-        u.detail.SetXAlign(0)
-        u.detail.SetLineWrap(true)
-        u.detail.SetVAlign(gtk.ALIGN_START)
+        // NB: раньше состав показывался в GtkLabel: длинные команды не
+        // влезали — строка обрезалась краем виджета и прокрутки не было.
+        // Теперь это монопространственный TextView с переносом по словам и
+        // прокруткой: виден весь состав при любой длине.
+        u.detail, _ = gtk.TextViewNew()
+        u.detail.SetEditable(false)
+        u.detail.SetCursorVisible(false)
+        u.detail.SetWrapMode(gtk.WRAP_WORD_CHAR)
+        u.detail.SetMonospace(true)
+        u.detail.SetLeftMargin(10)
+        u.detail.SetRightMargin(10)
+        u.detail.SetTopMargin(8)
+        u.detail.SetBottomMargin(8)
+        addClass(u.detail, "rpdetail")
+        if db, err := u.detail.GetBuffer(); err == nil {
+                dc := detailColors()
+                db.CreateTag("h1", map[string]interface{}{"weight": 700, "scale": 1.15, "foreground": dc.text})
+                db.CreateTag("dim", map[string]interface{}{"foreground": dc.dim})
+                db.CreateTag("num", map[string]interface{}{"weight": 700, "foreground": dc.sec})
+                db.CreateTag("root", map[string]interface{}{"foreground": dc.warn})
+                db.CreateTag("mono", map[string]interface{}{"family": "Monospace", "foreground": dc.text})
+        }
         dsc := scrolled(u.detail, 0)
         dsc.SetVExpand(true)
         rightBox.PackStart(dsc, true, true, 0)
@@ -246,26 +282,42 @@ func (u *TemplatesUI) selected() *Template {
 
 func (u *TemplatesUI) showDetail() {
         t := u.selected()
-        if t == nil {
-                u.detail.SetText("Выберите шаблон слева — здесь появится список его задач.")
+        buf, berr := u.detail.GetBuffer()
+        if berr != nil || buf == nil {
                 return
         }
-        var b strings.Builder
-        b.WriteString("<b>" + t.Name + "</b>\n")
-        if t.Description != "" {
-                b.WriteString("<span foreground=\"#9aa0a6\">" + t.Description + "</span>\n")
-        }
-        b.WriteString("\n")
-        if len(t.Tasks) == 0 {
-                b.WriteString("(шаблон пуст — загрузите его в Плейбук и добавьте задачи)\n")
-        }
-        for i, task := range t.Tasks {
-                fmt.Fprintf(&b, "%d. %s\n", i+1, task.Describe())
-                if task.Root {
-                        b.WriteString("   <span foreground=\"#fbbf24\">с правами root</span>\n")
+        buf.SetText("")
+        ins := func(text, tag string) {
+                iter := buf.GetEndIter()
+                if tag != "" {
+                        buf.InsertWithTagByName(iter, text, tag)
+                } else {
+                        buf.Insert(iter, text)
                 }
         }
-        u.detail.SetMarkup(b.String())
+        if t == nil {
+                ins("Выберите шаблон слева — здесь появится список его задач.\n", "dim")
+                ins("Двойной щелчок по шаблону или кнопка «Редактировать шаблон» — изменить состав.\n", "dim")
+                return
+        }
+        ins(t.Name+"\n", "h1")
+        if t.Description != "" {
+                ins(t.Description+"\n", "dim")
+        }
+        ins("\n", "")
+        if len(t.Tasks) == 0 {
+                ins("(шаблон пуст — откройте редактор и добавьте задачи)\n", "dim")
+        }
+        for i, task := range t.Tasks {
+                ins(fmt.Sprintf("%d. ", i+1), "num")
+                ins(task.StepTitle()+"\n", "")
+                if cmd := task.stepCommand(); strings.TrimSpace(cmd) != "" {
+                        ins("   "+strings.ReplaceAll(cmd, "\n", "\n   ")+"\n", "mono")
+                }
+                if task.Root {
+                        ins("   с правами root (su)\n", "root")
+                }
+        }
 }
 
 func (u *TemplatesUI) deleteSelected() {
@@ -381,6 +433,296 @@ func (u *TemplatesUI) runSelected() {
         }
         logf("accent", "🚀 Шаблон «%s»: %d задач на %d хост(ов)", t.Name, len(t.Tasks), len(ips))
         go runPlaybookOnHosts(ips, t.Tasks, "Шаблон: "+t.Name)
+}
+
+// editSelected открывает редактор выбранного шаблона (v1.11.0).
+func (u *TemplatesUI) editSelected() {
+        t := u.selected()
+        if t == nil {
+                warnDialog(app.window, "Сначала выберите шаблон в списке")
+                return
+        }
+        nt, ok := templateEditDialog(app.window, *t)
+        if !ok {
+                return
+        }
+        // замена по старому имени (имя тоже могло измениться)
+        for i := range store.State.Templates {
+                if store.State.Templates[i].Name == t.Name {
+                        store.State.Templates[i] = nt
+                        break
+                }
+        }
+        _ = store.Save()
+        u.refresh()
+        u.selectByName(nt.Name)
+        logf("ok", "✎ Шаблон «%s» изменён (%d задач)", nt.Name, len(nt.Tasks))
+}
+
+// templateEditDialog — редактор шаблона: имя, описание и состав задач.
+// Задачи можно добавлять, изменять (в отдельном окне с многострочным
+// редактором команды), удалять и передвигать.
+func templateEditDialog(parent *gtk.Window, src Template) (Template, bool) {
+        t := Template{
+                Name:        src.Name,
+                Description: src.Description,
+                Tasks:       append([]PlaybookTask(nil), src.Tasks...),
+        }
+        dlg, err := gtk.DialogNew()
+        if err != nil {
+                return src, false
+        }
+        dlg.SetTitle("Редактор шаблона")
+        dlg.SetTransientFor(parent)
+        dlg.SetModal(true)
+        dlg.SetDefaultSize(640, 540)
+        registerModal(dlg)
+        defer unregisterModal()
+        area, _ := dlg.GetContentArea()
+        area.SetMarginTop(12)
+        area.SetMarginBottom(6)
+        area.SetMarginStart(14)
+        area.SetMarginEnd(14)
+
+        rowName := boxNew(gtk.ORIENTATION_HORIZONTAL, 8)
+        lblName := labelNew("Имя:")
+        nameE, _ := gtk.EntryNew()
+        nameE.SetText(t.Name)
+        nameE.SetHExpand(true)
+        rowName.PackStart(lblName, false, false, 0)
+        rowName.PackStart(nameE, true, true, 0)
+        area.PackStart(rowName, false, false, 4)
+
+        rowDesc := boxNew(gtk.ORIENTATION_HORIZONTAL, 8)
+        lblDesc := labelNew("Описание:")
+        descE, _ := gtk.EntryNew()
+        descE.SetText(t.Description)
+        descE.SetHExpand(true)
+        rowDesc.PackStart(lblDesc, false, false, 0)
+        rowDesc.PackStart(descE, true, true, 0)
+        area.PackStart(rowDesc, false, false, 4)
+
+        lt := labelNew("Задачи шаблона (порядок = порядок выполнения):")
+        lt.SetXAlign(0)
+        area.PackStart(lt, false, false, 6)
+
+        tree, st := makeTree([]string{"№", "Задача"}, []glib.Type{glib.TYPE_STRING, glib.TYPE_STRING})
+        tree.SetSizeRequest(-1, 150)
+        tsc := scrolled(tree, 150)
+        area.PackStart(tsc, true, true, 0)
+
+        fillTasks := func() {
+                st.Clear()
+                for i, task := range t.Tasks {
+                        iter := st.Append()
+                        _ = st.Set(iter, []int{0, 1}, []interface{}{fmt.Sprintf("%d", i+1), task.StepTitle() + "\n" + task.stepCommand()})
+                }
+        }
+        fillTasks()
+
+        btnRow := boxNew(gtk.ORIENTATION_HORIZONTAL, 4)
+        btnAdd := buttonNew("Добавить")
+        btnEdit := buttonNew("Изменить")
+        btnDel := buttonNew("Удалить")
+        btnUp := buttonNew("↑")
+        btnDown := buttonNew("↓")
+        btnUp.SetTooltipText("Передвинуть задачу выше")
+        btnDown.SetTooltipText("Передвинуть задачу ниже")
+        btnRow.PackStart(btnAdd, false, false, 0)
+        btnRow.PackStart(btnEdit, false, false, 0)
+        btnRow.PackStart(btnDel, false, false, 0)
+        btnRow.PackEnd(btnDown, false, false, 0)
+        btnRow.PackEnd(btnUp, false, false, 0)
+        area.PackStart(btnRow, false, false, 4)
+
+        selIdx := func() int {
+                m, iter, ok := selIter(tree)
+                if !ok {
+                        return -1
+                }
+                return atoiSafe(iterGetString(m, iter, 0)) - 1
+        }
+
+        btnAdd.Connect("clicked", func() {
+                nt, ok := templateTaskDialog(dlg, PlaybookTask{Type: "command"})
+                if !ok {
+                        return
+                }
+                t.Tasks = append(t.Tasks, nt)
+                fillTasks()
+        })
+        btnEdit.Connect("clicked", func() {
+                i := selIdx()
+                if i < 0 || i >= len(t.Tasks) {
+                        warnDialog(app.window, "Выберите задачу в списке")
+                        return
+                }
+                nt, ok := templateTaskDialog(dlg, t.Tasks[i])
+                if !ok {
+                        return
+                }
+                t.Tasks[i] = nt
+                fillTasks()
+        })
+        btnDel.Connect("clicked", func() {
+                i := selIdx()
+                if i < 0 || i >= len(t.Tasks) {
+                        return
+                }
+                t.Tasks = append(t.Tasks[:i], t.Tasks[i+1:]...)
+                fillTasks()
+        })
+        move := func(delta int) {
+                i := selIdx()
+                j := i + delta
+                if i < 0 || j < 0 || j >= len(t.Tasks) {
+                        return
+                }
+                t.Tasks[i], t.Tasks[j] = t.Tasks[j], t.Tasks[i]
+                fillTasks()
+        }
+        btnUp.Connect("clicked", func() { move(-1) })
+        btnDown.Connect("clicked", func() { move(1) })
+
+        dlg.AddButton("Отмена", gtk.RESPONSE_CANCEL)
+        okBtn, _ := dlg.AddButton("Сохранить", gtk.RESPONSE_OK)
+        if sb, err := okBtn.GetStyleContext(); err == nil {
+                sb.AddClass("suggested-action")
+        }
+        dlg.SetDefaultResponse(gtk.RESPONSE_OK)
+        dlg.ShowAll()
+        res := dlg.Run()
+        dlg.Destroy()
+        if res != gtk.RESPONSE_OK {
+                return src, false
+        }
+        t.Name = strings.TrimSpace(entText(nameE))
+        t.Description = strings.TrimSpace(entText(descE))
+        if t.Name == "" {
+                t.Name = src.Name
+        }
+        return t, true
+}
+
+// templateTaskDialog — редактор ОДНОЙ задачи шаблона. Источник — многострочный
+// монопространственный TextView: длинные команды видны целиком.
+func templateTaskDialog(parent *gtk.Dialog, src PlaybookTask) (PlaybookTask, bool) {
+        t := src
+        dlg, err := gtk.DialogNew()
+        if err != nil {
+                return src, false
+        }
+        dlg.SetTitle("Задача шаблона")
+        dlg.SetTransientFor(parent)
+        dlg.SetModal(true)
+        dlg.SetDefaultSize(560, 460)
+        registerModal(dlg)
+        defer unregisterModal()
+        area, _ := dlg.GetContentArea()
+        area.SetMarginTop(12)
+        area.SetMarginBottom(6)
+        area.SetMarginStart(14)
+        area.SetMarginEnd(14)
+
+        addLabelField := func(text string) {
+                l := labelNew(text)
+                l.SetXAlign(0)
+                area.PackStart(l, false, false, 4)
+        }
+
+        addLabelField("Название шага (для списка задач; можно оставить пустым):")
+        nameE, _ := gtk.EntryNew()
+        nameE.SetText(t.Name)
+        area.PackStart(nameE, false, false, 2)
+
+        addLabelField("Тип задачи:")
+        typeC, _ := gtk.ComboBoxTextNew()
+        for _, s := range []string{"Команда", "Скрипт (путь к файлу на этом ПК)", "Копирование файла"} {
+                typeC.AppendText(s)
+        }
+        switch t.Type {
+        case "script":
+                typeC.SetActive(1)
+        case "copy":
+                typeC.SetActive(2)
+        default:
+                typeC.SetActive(0)
+        }
+        area.PackStart(typeC, false, false, 2)
+
+        srcLbl := labelNew("Команда:")
+        srcLbl.SetXAlign(0)
+        area.PackStart(srcLbl, false, false, 4)
+
+        srcTv, _ := gtk.TextViewNew()
+        srcTv.SetWrapMode(gtk.WRAP_WORD_CHAR)
+        srcTv.SetMonospace(true)
+        srcTv.SetSizeRequest(-1, 140)
+        tvSet(srcTv, 140)
+        tvSetText(srcTv, t.Source)
+        srcSc := scrolled(srcTv, 140)
+        area.PackStart(srcSc, true, true, 0)
+
+        destLbl := labelNew("Назначение на сервере (для копирования):")
+        destLbl.SetXAlign(0)
+        destE, _ := gtk.EntryNew()
+        destE.SetText(t.Dest)
+        area.PackStart(destLbl, false, false, 4)
+        area.PackStart(destE, false, false, 2)
+
+        rootC, _ := gtk.CheckButtonNewWithLabel("Выполнять с повышением прав (su → root)")
+        rootC.SetActive(t.Root)
+        area.PackStart(rootC, false, false, 6)
+
+        updVis := func() {
+                switch typeC.GetActive() {
+                case 0:
+                        srcLbl.SetText("Команда:")
+                        setVis(srcSc, true)
+                        setVis(destLbl, false)
+                        setVis(destE, false)
+                case 1:
+                        srcLbl.SetText("Путь к скрипту на этом ПК:")
+                        setVis(srcSc, true)
+                        setVis(destLbl, false)
+                        setVis(destE, false)
+                default:
+                        srcLbl.SetText("Локальный файл:")
+                        setVis(srcSc, true)
+                        setVis(destLbl, true)
+                        setVis(destE, true)
+                }
+        }
+        typeC.Connect("changed", updVis)
+        updVis()
+
+        dlg.AddButton("Отмена", gtk.RESPONSE_CANCEL)
+        okBtn, _ := dlg.AddButton("Сохранить", gtk.RESPONSE_OK)
+        if sb, err := okBtn.GetStyleContext(); err == nil {
+                sb.AddClass("suggested-action")
+        }
+        dlg.SetDefaultResponse(gtk.RESPONSE_OK)
+        dlg.ShowAll()
+        res := dlg.Run()
+        if res == gtk.RESPONSE_OK {
+                t.Name = strings.TrimSpace(entText(nameE))
+                t.Root = rootC.GetActive()
+                t.Dest = strings.TrimSpace(entText(destE))
+                switch typeC.GetActive() {
+                case 1:
+                        t.Type = "script"
+                case 2:
+                        t.Type = "copy"
+                default:
+                        t.Type = "command"
+                }
+                t.Source = tvText(srcTv)
+        }
+        dlg.Destroy()
+        if res != gtk.RESPONSE_OK {
+                return src, false
+        }
+        return t, true
 }
 
 var _ = glib.TimeoutAdd

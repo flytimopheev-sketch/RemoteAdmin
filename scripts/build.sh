@@ -1,9 +1,9 @@
 #!/bin/bash
-# RemoteAdmin 1.10.0 build script
+# RemoteAdmin 1.11.0 build script
 # Builds: linux binary, RPM (РЕД ОС 8), .deb (Astra/Debian), AppImage
 set -e
 cd "$(dirname "$0")/.."   # repo root
-export VERSION=1.10.0
+export VERSION=1.11.0
 export RELEASE=1
 export PATH="$HOME/rpmroot/usr/bin:$PATH"
 export PKGNAME=remoteadmin
@@ -61,7 +61,7 @@ Version: $VERSION
 Section: net
 Priority: optional
 Architecture: amd64
-Depends: libgtk-3-0, libgdk-pixbuf-2.0-0, openssh-client
+Depends: libgtk-3-0, libgdk-pixbuf-2.0-0, libvte-2.91-0, openssh-client
 Recommends: notify-send | libnotify-bin
 Maintainer: RemoteAdmin <admin@remoteadmin.local>
 Description: Современный SSH-менеджер группы хостов

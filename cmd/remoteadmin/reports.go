@@ -71,7 +71,6 @@ func newReportsUI() *ReportsUI {
         toolbar.PackEnd(btnHTML, false, false, 0)
         root.PackStart(toolbar, false, false, 0)
 
-        panes := boxNew(gtk.ORIENTATION_HORIZONTAL, 6)
         // NB: the 5th (hidden) column carries the row index into reports;
         // it MUST exist in the model or selection clicks break (previously
         // caused Gtk-CRITICAL and a wrong detail pane).
@@ -100,7 +99,6 @@ func newReportsUI() *ReportsUI {
         sel.Connect("changed", func() { u.showDetail() })
         sc := scrolled(u.tree, 0)
         sc.SetVExpand(true)
-        panes.PackStart(sc, true, true, 0)
 
         u.detail, _ = gtk.TextViewNew()
         u.detail.SetEditable(false)
@@ -124,7 +122,12 @@ func newReportsUI() *ReportsUI {
         dsc := scrolled(u.detail, 0)
         dsc.SetVExpand(true)
         dsc.SetSizeRequest(340, -1)
-        panes.PackStart(dsc, false, false, 0)
+
+        // NB: правая панель (детали записи) раньше была приклеена к правому
+        // краю без возможности растянуть её — пользователь жаловался, что она
+        // узкая. Теперь это GtkPaned: границу «список | детали» можно тащить
+        // мышью, положение запоминается между сеансами.
+        panes := makeHPaned("reports", sc, dsc, 560)
 
         root.PackStart(panes, true, true, 0)
         u.refresh()
