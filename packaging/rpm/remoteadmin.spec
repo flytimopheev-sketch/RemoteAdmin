@@ -1,5 +1,5 @@
 Name:           remoteadmin
-Version:        1.8.0
+Version:        1.9.0
 Release:        1%{?dist}
 Summary:        Современный SSH-менеджер группы хостов (GTK3)
 License:        MIT
@@ -73,7 +73,7 @@ DESK
 %{_datadir}/icons/hicolor/128x128/apps/remoteadmin.png
 
 %changelog
-* Thu Nov 12 2026 RemoteAdmin <admin@remoteadmin.local> 1.8.0-1
+* Thu Nov 12 2026 RemoteAdmin <admin@remoteadmin.local> 1.9.0-1
 - Журнал: цветовое кодирование по результату — зелёный успех,
   красный ошибка, жёлтый предупреждение (строки лога и дерево журнала)
 - Журнал: двойной щелчок по строке хоста — «развёрнутая» запись

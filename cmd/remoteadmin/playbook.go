@@ -14,9 +14,11 @@ package main
 
 import (
         "fmt"
+        "net"
         "os"
         "path/filepath"
         "strings"
+        "sync"
         "time"
 
         "github.com/gotk3/gotk3/gdk"
@@ -101,22 +103,57 @@ type PlaybookUI struct {
         serviceE    *gtk.Entry
         postEd      *bashEditor
         rootC       *gtk.CheckButton
-        abortC      *gtk.CheckButton
         hostBtn     *gtk.Button
         srcLabel    *gtk.Label
         rowLabels   map[string]*gtk.Label // подписи строк формы (скрываются вместе с полями)
         hostLbl     string
         hostPop     *gtk.Popover
         updatingAct bool
+
+        // --- v1.9.0: метаданные, цель, динамический запуск, настройки выполнения ---
+        metaNameE    *gtk.Entry
+        metaDescE    *gtk.Entry
+        tgtLbl       *gtk.Label
+        runBtn       *gtk.Button
+        runHint      *gtk.Label
+        parS         *gtk.SpinButton
+        runTO        *gtk.SpinButton
+        errPolC      *gtk.ComboBoxText
+        stepNameE    *gtk.Entry
+        stepTimeoutS *gtk.SpinButton
+        rcS          *gtk.SpinButton
+        allowRetryC  *gtk.CheckButton
+        retryCntS    *gtk.SpinButton
+        retryDelS    *gtk.SpinButton
+        metaSched    bool
 }
 
 func newPlaybookUI() *PlaybookUI {
         u := &PlaybookUI{}
-        root := boxNew(gtk.ORIENTATION_HORIZONTAL, 8)
+        root := boxNew(gtk.ORIENTATION_VERTICAL, 6)
+
+        // ===== v1.9.0: карточка меты — название, цель, запуск, настройки =====
+        metaCard, metaBox := cardBox("")
+        u.metaNameE = entryNew("Название плейбука (напр. «Проверка состояния дисков»)")
+        u.metaNameE.SetText(store.State.PlaybookName)
+        u.metaDescE = entryNew("Описание: что делает плейбук и когда его запускать")
+        u.metaDescE.SetText(store.State.PlaybookDescription)
+        u.connectMetaSave(u.metaNameE)
+        u.connectMetaSave(u.metaDescE)
+        metaBox.PackStart(u.metaNameE, false, false, 2)
+        metaBox.PackStart(u.metaDescE, false, false, 2)
+
+        u.tgtLbl = labelNew("Цель: —")
+        u.tgtLbl.SetXAlign(0)
+        addClass(u.tgtLbl, "ratitle")
+        metaBox.PackStart(u.tgtLbl, false, false, 2)
+
+        // ===== нижняя область: список задач + форма =====
+        paned := boxNew(gtk.ORIENTATION_HORIZONTAL, 8)
 
         // ===== left: task list =====
         leftCard, leftBox := cardBox("Последовательность задач")
-        u.tree, u.st = makeTree([]string{"#", "Задача", ""}, []glib.Type{glib.TYPE_STRING, glib.TYPE_STRING, glib.TYPE_STRING})
+        u.tree, u.st = makeTreeM([]string{"#", "Задача", ""}, []glib.Type{glib.TYPE_STRING, glib.TYPE_STRING, glib.TYPE_STRING}, map[int]bool{pbColDesc: true})
         hideCol(u.tree, pbColFull)
         // подсказка с ПОЛНЫМ текстом задачи (команда не обрезается)
         u.tree.SetTooltipColumn(pbColFull)
@@ -180,13 +217,18 @@ func newPlaybookUI() *PlaybookUI {
         btnRow.PackStart(dndHint, true, true, 0)
         leftBox.PackStart(btnRow, false, false, 0)
 
-        // ---- run controls ----
+        // ---- run controls (v1.9.0: в карточке меты, динамическая кнопка) ----
         runRow := boxNew(gtk.ORIENTATION_HORIZONTAL, 3)
-        btnRun := buttonNew("▶ Запустить playbook")
-        scr, _ := btnRun.GetStyleContext()
+        u.runBtn = buttonNew("▶ Запустить плейбук")
+        scr, _ := u.runBtn.GetStyleContext()
         scr.AddClass("suggested")
-        btnRun.SetTooltipText("Выполнить задачи на выбранных хостах")
-        btnRun.Connect("clicked", func() { u.runPlaybook() })
+        u.runBtn.SetTooltipText("Выполнить задачи на выбранных хостах")
+        u.runBtn.Connect("clicked", func() { u.runPlaybook() })
+
+        // «Проверить перед запуском»: параметры, доступность хостов, права
+        btnPreflight := buttonNew("Проверить перед запуском")
+        btnPreflight.SetTooltipText("Проверить заполненность параметров, доступность хостов и наличие прав.\n\nПроверка не гарантирует безопасность произвольных команд — просмотрите команды перед запуском.")
+        btnPreflight.Connect("clicked", func() { u.preflight() })
 
         // кнопка выбора хостов-получателей прямо здесь (без переключения вкладок)
         u.hostBtn = buttonNew("Цель: все")
@@ -199,19 +241,45 @@ func newPlaybookUI() *PlaybookUI {
         btnSched.SetTooltipText("Запланировать регулярный запуск этого плейбука\n(план сохраняется как шаблон → расписание с cron)")
         btnSched.Connect("clicked", func() { u.schedulePlaybook() })
 
-        runRow.PackStart(btnRun, true, true, 0)
+        runRow.PackStart(u.runBtn, true, true, 0)
+        runRow.PackStart(btnPreflight, false, false, 0)
         runRow.PackStart(u.hostBtn, true, true, 0)
         runRow.PackStart(btnSched, false, false, 0)
-        leftBox.PackStart(runRow, false, false, 0)
+        metaBox.PackStart(runRow, false, false, 2)
 
-        optRow := boxNew(gtk.ORIENTATION_HORIZONTAL, 3)
-        u.abortC, _ = gtk.CheckButtonNewWithLabel("Прервать при ошибке")
-        u.abortC.SetTooltipText("Включено: первая же ошибка останавливает плейбук на этом хосте.\nВыключено: выполнение продолжается до конца.")
-        u.abortC.SetActive(!store.State.PlaybookContinueOnError)
-        u.abortC.Connect("toggled", func() {
-                store.State.PlaybookContinueOnError = !u.abortC.GetActive()
-                _ = store.Save()
-        })
+        // подсказка: почему запуск недоступен / готовность
+        u.runHint = labelNew("")
+        u.runHint.SetXAlign(0)
+        u.runHint.SetLineWrap(true)
+        addClass(u.runHint, "ramuted")
+        metaBox.PackStart(u.runHint, false, false, 0)
+
+        // настройки выполнения всего запуска (v1.9.0)
+        setRow := boxNew(gtk.ORIENTATION_HORIZONTAL, 4)
+        setRow.PackStart(labelNew("Параллельно хостов:"), false, false, 0)
+        u.parS, _ = gtk.SpinButtonNewWithRange(1, 64, 1)
+        u.parS.SetValue(float64(orInt(store.State.PlaybookParallel, 3)))
+        u.parS.SetTooltipText("Сколько хостов обрабатывать одновременно")
+        setRow.PackStart(u.parS, false, false, 0)
+        setRow.PackStart(labelNew("Общий таймаут, с (0 — без):"), false, false, 0)
+        u.runTO, _ = gtk.SpinButtonNewWithRange(0, 86400, 60)
+        u.runTO.SetValue(float64(store.State.PlaybookRunTimeoutSec))
+        setRow.PackStart(u.runTO, false, false, 0)
+        setRow.PackStart(labelNew("При ошибке:"), false, false, 0)
+        u.errPolC, _ = gtk.ComboBoxTextNew()
+        u.errPolC.AppendText("Остановиться")
+        u.errPolC.AppendText("Продолжить")
+        u.errPolC.AppendText("Спросить")
+        switch store.State.effectiveErrPolicy() {
+        case "continue":
+                u.errPolC.SetActive(1)
+        case "ask":
+                u.errPolC.SetActive(2)
+        default:
+                u.errPolC.SetActive(0)
+        }
+        u.errPolC.SetTooltipText("Политика ошибки: остановиться / продолжить / спросить у пользователя")
+        setRow.PackStart(u.errPolC, false, false, 0)
         btnVars := buttonNew("Переменные…")
         btnVars.SetTooltipText("Переменные {{ var }}: глобальные и для конкретных хостов")
         btnVars.Connect("clicked", func() { showPlaybookVarsDialog() })
@@ -220,11 +288,11 @@ func newPlaybookUI() *PlaybookUI {
         btnSecrets.Connect("clicked", func() { showSecretsManager() })
         btnTpl := buttonNew("Сохранить как шаблон")
         btnTpl.Connect("clicked", func() { u.saveAsTemplate() })
-        optRow.PackStart(u.abortC, false, false, 0)
-        optRow.PackStart(btnVars, true, true, 0)
-        optRow.PackStart(btnSecrets, true, true, 0)
-        optRow.PackStart(btnTpl, true, true, 0)
-        leftBox.PackStart(optRow, false, false, 0)
+        setRow.PackStart(btnVars, false, false, 0)
+        setRow.PackStart(btnSecrets, false, false, 0)
+        setRow.PackStart(btnTpl, false, false, 0)
+        metaBox.PackStart(setRow, false, false, 2)
+        u.connectRunSettings()
 
         // ===== right: task form =====
         rightCard, rightBox := cardBox("Параметры задачи")
@@ -297,17 +365,45 @@ func newPlaybookUI() *PlaybookUI {
         }
         lbl0 := labelNew("Источник:")
         u.srcLabel = lbl0
-        u.form.attach(lbl0, 0, 0, 1, 1)
-        u.form.attach(srcStack, 1, 0, 1, 1)
-        mkRow("dest", "Назначение:", 1, u.destE)
-        mkRow("find", "Найти:", 2, u.searchE)
-        mkRow("repl", "Заменить:", 3, u.replaceE)
-        mkRow("svc", "Служба:", 4, u.serviceE)
-        mkRow("post", "Команды после:", 5, postScroll)
-        mkRow("act", "Действие:", 6, u.actionCombo)
-        mkRow("runif", "Выполнять:", 7, u.runIfCombo)
-        u.form.attach(u.rootC, 1, 8, 1, 1)
+        // v1.9.0: осмысленное название шага — первая строка формы
+        u.stepNameE = entryNew("Название шага (напр. «Собрать SMART-показатели»)")
+        mkRow("stepname", "Название шага:", 0, u.stepNameE)
+        u.form.attach(lbl0, 0, 1, 1, 1)
+        u.form.attach(srcStack, 1, 1, 1, 1)
+        mkRow("dest", "Назначение:", 2, u.destE)
+        mkRow("find", "Найти:", 3, u.searchE)
+        mkRow("repl", "Заменить:", 4, u.replaceE)
+        mkRow("svc", "Служба:", 5, u.serviceE)
+        mkRow("post", "Команды после:", 6, postScroll)
+        mkRow("act", "Действие:", 7, u.actionCombo)
+        // условие + поле кода возврата (rc:N) в одной строке
+        runIfRow := boxNew(gtk.ORIENTATION_HORIZONTAL, 4)
+        u.rcS, _ = gtk.SpinButtonNewWithRange(0, 255, 1)
+        u.rcS.SetTooltipText("Шаг запустится, если предыдущий вернёт этот код возврата")
+        runIfRow.PackStart(u.runIfCombo, true, true, 0)
+        runIfRow.PackStart(u.rcS, false, false, 0)
+        mkRow("runif", "Выполнять:", 8, runIfRow)
+        u.form.attach(u.rootC, 1, 9, 1, 1)
         rightBox.PackStart(u.form.w, false, false, 0)
+
+        // v1.9.0: таймаут шага и повторы — в раскрытии
+        expCtl, _ := gtk.ExpanderNew("Таймаут, повторы и разрешение повторного запуска")
+        expGrid := mkGrid()
+        expGrid.attach(labelNew("Таймаут шага, с (0 — общий):"), 0, 0, 1, 1)
+        u.stepTimeoutS, _ = gtk.SpinButtonNewWithRange(0, 86400, 30)
+        expGrid.attach(u.stepTimeoutS, 1, 0, 1, 1)
+        u.allowRetryC, _ = gtk.CheckButtonNewWithLabel("Разрешён повторный запуск (авто-повторы и «Повторить неудачные»)")
+        u.allowRetryC.SetTooltipText("Приложение не решает за вас, безопасно ли повторять команду:\nповторы работают только для задач с этим флагом")
+        expGrid.attach(u.allowRetryC, 1, 1, 1, 1)
+        expGrid.attach(labelNew("Авто-повторов:"), 0, 2, 1, 1)
+        u.retryCntS, _ = gtk.SpinButtonNewWithRange(0, 10, 1)
+        expGrid.attach(u.retryCntS, 1, 2, 1, 1)
+        expGrid.attach(labelNew("Пауза между, с:"), 0, 3, 1, 1)
+        u.retryDelS, _ = gtk.SpinButtonNewWithRange(0, 600, 5)
+        u.retryDelS.SetValue(3)
+        expGrid.attach(u.retryDelS, 1, 3, 1, 1)
+        expCtl.Add(expGrid.w)
+        rightBox.PackStart(expCtl, false, false, 0)
 
         formBtns := boxNew(gtk.ORIENTATION_HORIZONTAL, 3)
         btnAdd := buttonNew("Добавить задачу")
@@ -327,12 +423,16 @@ func newPlaybookUI() *PlaybookUI {
         hint.SetLineWrap(true)
         rightBox.PackStart(hint, false, false, 2)
 
-        root.PackStart(leftCard, true, true, 0)
-        root.PackStart(rightCard, false, false, 0)
+        root.PackStart(metaCard, false, false, 0)
+        paned.PackStart(leftCard, true, true, 0)
+        paned.PackStart(rightCard, false, false, 0)
+        root.PackStart(paned, true, true, 0)
 
         u.refresh()
         u.widget = root
         glibIdle(func() { u.updateFormVisibility() })
+        u.refreshTargetLine()
+        u.startTargetTicker()
         return u
 }
 
@@ -422,12 +522,22 @@ func (u *PlaybookUI) currentAction() string {
 func (u *PlaybookUI) currentRunIf() string {
         idx := u.runIfCombo.GetActive()
         if idx > 0 && idx < len(runIfOptions) {
+                if runIfOptions[idx].Key == "rc" {
+                        return fmt.Sprintf("rc:%d", u.rcS.GetValueAsInt())
+                }
                 return runIfOptions[idx].Key
         }
         return "always"
 }
 
 func (u *PlaybookUI) setRunIf(k string) {
+        if strings.HasPrefix(k, "rc:") {
+                u.runIfCombo.SetActive(3) // «При коде возврата…»
+                n := 0
+                fmt.Sscanf(strings.TrimPrefix(k, "rc:"), "%d", &n)
+                u.rcS.SetValue(float64(n))
+                return
+        }
         for i, r := range runIfOptions {
                 if r.Key == k {
                         u.runIfCombo.SetActive(i)
@@ -470,6 +580,10 @@ func (u *PlaybookUI) updateFormVisibility() {
         setVis(u.actionCombo, actRow)
         hideShow("act", actRow)
         u.fillActions()
+        // v1.9.0: поле кода возврата видно только для «При коде возврата…»
+        if u.rcS != nil && u.runIfCombo != nil {
+                setVis(u.rcS, u.runIfCombo.GetActive() == 3)
+        }
         // подпись строки источника по типу задачи
         if u.srcLabel != nil {
                 switch t {
@@ -490,6 +604,11 @@ func (u *PlaybookUI) formToTask() PlaybookTask {
         t := PlaybookTask{
                 Type:           u.currentType(),
                 Action:         u.currentAction(),
+                Name:           strings.TrimSpace(entText(u.stepNameE)),
+                TimeoutSec:     u.stepTimeoutS.GetValueAsInt(),
+                AllowRetry:     u.allowRetryC.GetActive(),
+                RetryCount:     u.retryCntS.GetValueAsInt(),
+                RetryDelaySec:  u.retryDelS.GetValueAsInt(),
                 Dest:           entText(u.destE),
                 Search:         entText(u.searchE),
                 Replace:        entText(u.replaceE),
@@ -517,6 +636,11 @@ func (u *PlaybookUI) formToTask() PlaybookTask {
 func (u *PlaybookUI) taskToForm(t PlaybookTask) {
         u.setType(t.Type)
         u.setAction(t.Action)
+        u.stepNameE.SetText(t.Name)
+        u.stepTimeoutS.SetValue(float64(t.TimeoutSec))
+        u.allowRetryC.SetActive(t.AllowRetry)
+        u.retryCntS.SetValue(float64(t.RetryCount))
+        u.retryDelS.SetValue(float64(orInt(t.RetryDelaySec, 3)))
         if t.Type == "command" {
                 u.cmdEd.setText(t.Source)
                 u.sourceE.SetText("")
@@ -535,6 +659,11 @@ func (u *PlaybookUI) taskToForm(t PlaybookTask) {
 }
 
 func (u *PlaybookUI) clearForm() {
+        u.stepNameE.SetText("")
+        u.stepTimeoutS.SetValue(0)
+        u.allowRetryC.SetActive(false)
+        u.retryCntS.SetValue(0)
+        u.retryDelS.SetValue(3)
         u.sourceE.SetText("")
         u.cmdEd.setText("")
         u.destE.SetText("")
@@ -695,10 +824,38 @@ func (u *PlaybookUI) refresh() {
         u.st.Clear()
         for i, t := range store.State.Playbook {
                 iter := u.st.Append()
+                // v1.9.0: имя шага жирным + команда моноширинным второй строкой
+                cmd := t.stepCommand()
+                if len(cmd) > 110 {
+                        cmd = cmd[:110] + "…"
+                }
+                title := t.StepTitle()
+                markup := fmt.Sprintf("<b>%d. %s</b>\n<span font=\"Monospace 8.5\" foreground=\"#8fa0c0\">$ %s</span>",
+                        i+1, escapeMarkup(title), escapeMarkup(cmd))
                 _ = u.st.Set(iter, []int{pbColNum, pbColDesc, pbColFull},
-                        []interface{}{fmt.Sprintf("%d", i+1), t.Describe(), t.DescribeFull()})
+                        []interface{}{fmt.Sprintf("%d", i+1), markup, t.DescribeFull() + "\n\n" + taskTip(t)})
         }
         u.updateHostBtn()
+}
+
+// taskTip — сводка настроек шага для tooltip.
+func taskTip(t PlaybookTask) string {
+        parts := []string{"тип: " + pbTypeRu(t.Type)}
+        if t.TimeoutSec > 0 {
+                parts = append(parts, fmt.Sprintf("таймаут: %d с", t.TimeoutSec))
+        }
+        if t.RunIf != "" && t.RunIf != "always" {
+                parts = append(parts, "условие: "+runIfRu(t.RunIf))
+        }
+        if t.AllowRetry {
+                parts = append(parts, fmt.Sprintf("повтор разрешён (до %d раз, пауза %d с)", t.RetryCount, orInt(t.RetryDelaySec, 3)))
+        } else {
+                parts = append(parts, "повтор запрещён")
+        }
+        if t.Root {
+                parts = append(parts, "права: root (su)")
+        }
+        return strings.Join(parts, " · ")
 }
 
 // ---------- проверка синтаксиса ----------
@@ -878,7 +1035,457 @@ func (u *PlaybookUI) targetHostsForPlaybook() []string {
         return app.hostsUI.targetHosts()
 }
 
+// ---------- v1.9.0: мета, цель, сводка, проверка, форма переменных ----------
+
+// connectMetaSave сохраняет название/описание с задержкой (debounce).
+func (u *PlaybookUI) connectMetaSave(e *gtk.Entry) {
+        e.Connect("changed", func() {
+                if u.metaSched {
+                        return
+                }
+                u.metaSched = true
+                glibTimeout(600, func() bool {
+                        u.metaSched = false
+                        u.saveMeta()
+                        return false
+                })
+        })
+}
+
+// saveMeta записывает название/описание и настройки запуска в состояние.
+func (u *PlaybookUI) saveMeta() {
+        if store == nil {
+                return
+        }
+        store.State.PlaybookName = strings.TrimSpace(entText(u.metaNameE))
+        store.State.PlaybookDescription = strings.TrimSpace(entText(u.metaDescE))
+        if u.parS != nil {
+                store.State.PlaybookParallel = u.parS.GetValueAsInt()
+                store.State.PlaybookRunTimeoutSec = u.runTO.GetValueAsInt()
+                switch u.errPolC.GetActive() {
+                case 1:
+                        store.State.PlaybookErrPolicy = "continue"
+                case 2:
+                        store.State.PlaybookErrPolicy = "ask"
+                default:
+                        store.State.PlaybookErrPolicy = "stop"
+                }
+        }
+        _ = store.Save()
+}
+
+// connectRunSettings — сохранение настроек запуска при изменении.
+func (u *PlaybookUI) connectRunSettings() {
+        save := func() { u.saveMeta() }
+        u.parS.Connect("value-changed", save)
+        u.runTO.Connect("value-changed", save)
+        u.errPolC.Connect("changed", save)
+}
+
+// startTargetTicker — периодическое обновление строки «Цель: …».
+func (u *PlaybookUI) startTargetTicker() {
+        var tick func() bool
+        tick = func() bool {
+                if u.widget == nil {
+                        return false
+                }
+                u.refreshTargetLine()
+                glibTimeout(1500, tick)
+                return false
+        }
+        glibTimeout(1500, tick)
+}
+
+// refreshTargetLine пересчитывает цель, доступность хостов и состояние кнопки.
+func (u *PlaybookUI) refreshTargetLine() {
+        if u.tgtLbl == nil || store == nil {
+                return
+        }
+        ips := u.targetHostsForPlaybook()
+        available := 0
+        for _, ip := range ips {
+                if h := store.FindHost(ip); h != nil && h.Status == "ok" {
+                        available++
+                }
+        }
+        src := "выбраны вручную"
+        if len(store.State.PlaybookHosts) == 0 {
+                src = "все видимые"
+        }
+        tasksN := len(store.State.Playbook)
+        tgt := fmt.Sprintf("Цель: %s · %d хост(ов) · %d доступны · задач: %d", src, len(ips), available, tasksN)
+        if name := strings.TrimSpace(store.State.PlaybookName); name != "" {
+                tgt = fmt.Sprintf("«%s» · %s", name, tgt)
+        }
+        u.tgtLbl.SetText(tgt)
+
+        var reasons []string
+        switch {
+        case tasksN == 0:
+                reasons = append(reasons, "плейбук пуст — добавьте задачи справа")
+        case len(ips) == 0:
+                reasons = append(reasons, "хосты не выбраны")
+        }
+        if len(ips) > 0 && available == 0 {
+                reasons = append(reasons, "ни один из выбранных хостов не прошёл проверку доступности (выполните «Ping» на вкладке «Хосты»)")
+        }
+        label := "▶ Запустить плейбук"
+        if len(ips) > 0 {
+                label = fmt.Sprintf("▶ Запустить на %d хостах", len(ips))
+        }
+        glibIdle(func() {
+                u.runBtn.SetLabel(label)
+                if len(reasons) == 0 {
+                        u.runBtn.SetSensitive(true)
+                        u.runHint.SetText("Готово к запуску: от пользователя «" + u.currentUser() + "»" + u.rootSuffix())
+                } else {
+                        u.runBtn.SetSensitive(false)
+                        u.runHint.SetText("Запуск недоступен: " + strings.Join(reasons, "; "))
+                }
+        })
+}
+
+func (u *PlaybookUI) currentUser() string {
+        if s := strings.TrimSpace(store.State.Username); s != "" {
+                return s
+        }
+        return "не задан"
+}
+
+func (u *PlaybookUI) rootSuffix() string {
+        n := 0
+        for _, t := range store.State.Playbook {
+                if t.Root {
+                        n++
+                }
+        }
+        if n > 0 {
+                return fmt.Sprintf(", с root (su): %d задач", n)
+        }
+        return ""
+}
+
+// orInt — значение или запасное, если ноль.
+func orInt(v, def int) int {
+        if v != 0 {
+                return v
+        }
+        return def
+}
+
+// preflight — «Проверить перед запуском»: параметры, переменные, доступы,
+// доступность хостов. Не гарантирует безопасность произвольных команд.
+func (u *PlaybookUI) preflight() {
+        tasks := store.State.Playbook
+        var issues []string
+        var warns []string
+
+        if len(tasks) == 0 {
+                issues = append(issues, "плейбук пуст — добавьте хотя бы одну задачу")
+        }
+        for i, t := range tasks {
+                pref := fmt.Sprintf("задача %d («%s»)", i+1, t.StepTitle())
+                if t.Type != "edit" && strings.TrimSpace(t.Source) == "" {
+                        issues = append(issues, pref+": не заполнен источник")
+                }
+                if (t.Type == "copy" || t.Type == "replace" || t.Type == "replace_with_cmds") && strings.TrimSpace(t.Dest) == "" {
+                        issues = append(issues, pref+": не указано назначение")
+                }
+                if t.Type == "edit" && strings.TrimSpace(t.Search) == "" {
+                        issues = append(issues, pref+": пустой текст поиска")
+                }
+                if t.Type == "service" && strings.TrimSpace(t.Source) == "" {
+                        issues = append(issues, pref+": не указано имя службы")
+                }
+                if t.Type == "package" && t.Action != "upgrade" && t.Action != "info" && strings.TrimSpace(t.Source) == "" {
+                        issues = append(issues, pref+": не указаны пакеты")
+                }
+        }
+        // переменные: ссылки {{…}} должны быть объявлены или иметь встроенное значение
+        for _, ref := range collectVarRefs(tasks) {
+                if !store.varExists(ref) {
+                        issues = append(issues, "переменная {{"+ref+"}} используется в задачах, но не задана (кнопка «Переменные…»)")
+                }
+        }
+        // доступы
+        if store.State.Username == "" {
+                issues = append(issues, "не указан логин SSH (панель «Действия»)")
+        }
+        if store.Password() == "" && store.State.KeyPath == "" {
+                issues = append(issues, "не указан пароль или путь к SSH-ключу")
+        }
+        // root
+        rootNeeded := false
+        for _, t := range tasks {
+                if t.Root {
+                        rootNeeded = true
+                }
+        }
+        if rootNeeded && store.RootPassword() == "" && store.State.Username != "root" {
+                issues = append(issues, "задачи требуют root (su), но пароль root не задан")
+        }
+        // хосты
+        ips := u.targetHostsForPlaybook()
+        if len(ips) == 0 {
+                issues = append(issues, "хосты не выбраны")
+        }
+        if len(ips) > 0 && len(tasks) > 0 && store.State.Username != "" {
+                unreachable := probeHosts(ips, 3*time.Second)
+                for _, ip := range unreachable {
+                        issues = append(issues, "хост "+ip+": нет соединения (TCP "+portOf(ip)+")")
+                }
+                if len(unreachable) == 0 {
+                        warns = append(warns, "все выбранные хосты доступны по сети")
+                }
+        }
+
+        var b strings.Builder
+        if len(issues) == 0 {
+                b.WriteString("<b>Проблем не найдено.</b>\n\n")
+        } else {
+                b.WriteString(fmt.Sprintf("<b>Найдено проблем: %d</b>\n\n", len(issues)))
+                for _, s := range issues {
+                        b.WriteString("• " + escapeMarkup(s) + "\n")
+                }
+        }
+        if len(warns) > 0 {
+                b.WriteString("\n")
+                for _, s := range warns {
+                        b.WriteString("✔ " + escapeMarkup(s) + "\n")
+                }
+        }
+        b.WriteString("\n<span foreground=\"#fbbf24\">Проверка не гарантирует безопасность произвольных команд: она проверяет заполненность параметров, доступность хостов и наличие прав, но не оценивает последствия команд.</span>")
+        infoDialogMarkup(app.window, "Проверка перед запуском", b.String())
+}
+
+func portOf(ip string) string {
+        if _, p, ok := splitHostPort(ip); ok {
+                return fmt.Sprintf("%d", p)
+        }
+        return "22"
+}
+
+// probeHosts — быстрая проверка TCP-доступности; возвращает недоступные.
+func probeHosts(ips []string, d time.Duration) []string {
+        type res struct {
+                ip string
+                ok bool
+        }
+        out := make([]res, len(ips))
+        var wg sync.WaitGroup
+        sem := make(chan struct{}, 8)
+        for i, ip := range ips {
+                wg.Add(1)
+                go func(i int, ip string) {
+                        defer wg.Done()
+                        sem <- struct{}{}
+                        defer func() { <-sem }()
+                        host, port := ip, 22
+                        if h, p, ok := splitHostPort(ip); ok {
+                                host, port = h, p
+                        }
+                        c, err := net.DialTimeout("tcp", fmt.Sprintf("%s:%d", host, port), d)
+                        if err == nil {
+                                _ = c.Close()
+                        }
+                        out[i] = res{ip, err == nil}
+                }(i, ip)
+        }
+        wg.Wait()
+        var bad []string
+        for _, r := range out {
+                if !r.ok {
+                        bad = append(bad, r.ip)
+                }
+        }
+        return bad
+}
+
+// buildSummaryText — текст сводки перед выполнением.
+func (u *PlaybookUI) buildSummaryText(ips []string, tasks []PlaybookTask) string {
+        var b strings.Builder
+        name := strings.TrimSpace(store.State.PlaybookName)
+        if name == "" {
+                name = "Без названия"
+        }
+        b.WriteString(fmt.Sprintf("<b>%s</b>\n", escapeMarkup(name)))
+        if strings.TrimSpace(store.State.PlaybookDescription) != "" {
+                b.WriteString("<span foreground=\"#8b93a5\">" + escapeMarkup(store.State.PlaybookDescription) + "</span>\n")
+        }
+        b.WriteString("\n<b>Задачи:</b>\n")
+        for i, t := range tasks {
+                line := fmt.Sprintf("  %d. %s", i+1, escapeMarkup(t.StepTitle()))
+                if t.Root {
+                        line += " <span foreground=\"#fbbf24\">[root]</span>"
+                }
+                if t.AllowRetry {
+                        line += " <span foreground=\"#8fa0c0\">[повтор]</span>"
+                }
+                b.WriteString(line + "\n")
+                b.WriteString("     <span font=\"Monospace 8.5\" foreground=\"#8fa0c0\">" + escapeMarkup(truncStr(t.stepCommand(), 120)) + "</span>\n")
+        }
+        b.WriteString(fmt.Sprintf("\n<b>Цели:</b> %d хост(ов)\n  ", len(ips)))
+        for i, ip := range ips {
+                if i == 10 {
+                        b.WriteString(fmt.Sprintf("… и ещё %d", len(ips)-10))
+                        break
+                }
+                if i > 0 {
+                        b.WriteString(", ")
+                }
+                b.WriteString(ip)
+        }
+        b.WriteString("\n\n<b>Пользователь:</b> " + escapeMarkup(u.currentUser()) + u.rootSuffixLine())
+        b.WriteString(fmt.Sprintf("\n<b>Выполнение:</b> параллельно до %d хостов · политика ошибки: %s", store.State.effectiveParallel(), errPolicyRu(store.State.effectiveErrPolicy())))
+        if store.State.PlaybookRunTimeoutSec > 0 {
+                b.WriteString(fmt.Sprintf(" · общий таймаут: %s", formatDur(int64(store.State.PlaybookRunTimeoutSec)*1000)))
+        }
+        if refs := collectVarRefs(tasks); len(refs) > 0 {
+                b.WriteString("\n<b>Переменные:</b> " + strings.Join(refs, ", "))
+        }
+        return b.String()
+}
+
+func (u *PlaybookUI) rootSuffixLine() string {
+        n := 0
+        for _, t := range store.State.Playbook {
+                if t.Root {
+                        n++
+                }
+        }
+        if n > 0 {
+                return fmt.Sprintf(" · задач с root (su): %d", n)
+        }
+        return ""
+}
+
+func truncStr(s string, n int) string {
+        if len(s) > n {
+                return s[:n] + "…"
+        }
+        return s
+}
+
+// infoDialogMarkup — информационное окно с Pango-markup.
+func infoDialogMarkup(parent *gtk.Window, title, markup string) {
+        if parent == nil && app != nil {
+                parent = app.window
+        }
+        d, err := gtk.DialogNewWithButtons(title, parent, gtk.DIALOG_MODAL,
+                []interface{}{"ОК", gtk.RESPONSE_OK})
+        if err != nil {
+                return
+        }
+        defer d.Destroy()
+        defer unregisterModal()
+        registerModal(d)
+        d.SetDefaultSize(620, 420)
+        box, _ := d.GetContentArea()
+        lbl := labelNew("")
+        lbl.SetMarkup(markup)
+        lbl.SetXAlign(0)
+        lbl.SetLineWrap(true)
+        sc := scrolled(lbl, 0)
+        sc.SetVExpand(true)
+        box.PackStart(sc, true, true, 8)
+        box.ShowAll()
+        d.Run()
+}
+
+// markupConfirm — подтверждение с Pango-markup и своими подписями кнопок.
+func markupConfirm(parent *gtk.Window, title, markup, okLabel, cancelLabel string) bool {
+        if parent == nil && app != nil {
+                parent = app.window
+        }
+        d, err := gtk.DialogNewWithButtons(title, parent, gtk.DIALOG_MODAL,
+                []interface{}{okLabel, gtk.RESPONSE_ACCEPT},
+                []interface{}{cancelLabel, gtk.RESPONSE_CANCEL},
+        )
+        if err != nil {
+                return false
+        }
+        defer d.Destroy()
+        defer unregisterModal()
+        registerModal(d)
+        d.SetDefaultSize(640, 520)
+        box, _ := d.GetContentArea()
+        lbl := labelNew("")
+        lbl.SetMarkup(markup)
+        lbl.SetXAlign(0)
+        lbl.SetLineWrap(true)
+        sc := scrolled(lbl, 0)
+        sc.SetVExpand(true)
+        box.PackStart(sc, true, true, 8)
+        box.ShowAll()
+        return d.Run() == gtk.RESPONSE_ACCEPT
+}
+
+// varsForm — диалог ввода значений переменных перед запуском.
+// Значения живут только в сессии запуска (не сохраняются в конфиг).
+func (u *PlaybookUI) varsForm(refs []string) (map[string]string, bool) {
+        d, err := gtk.DialogNewWithButtons(
+                "Значения переменных", app.window, gtk.DIALOG_MODAL,
+                []interface{}{"Запустить", gtk.RESPONSE_ACCEPT},
+                []interface{}{"Отмена", gtk.RESPONSE_CANCEL},
+        )
+        if err != nil {
+                return nil, false
+        }
+        defer d.Destroy()
+        defer unregisterModal()
+        registerModal(d)
+        d.SetDefaultSize(480, 130+len(refs)*40)
+        box, _ := d.GetContentArea()
+        box.SetMarginStart(10)
+        box.SetMarginEnd(10)
+        box.SetMarginTop(8)
+        box.SetMarginBottom(6)
+
+        hint := labelNew("Значения действуют для этого запуска (сохранённые — в «Переменные…»); секреты — {{ secret:имя }}.")
+        addClass(hint, "ramuted")
+        hint.SetLineWrap(true)
+        hint.SetXAlign(0)
+        box.PackStart(hint, false, false, 4)
+
+        type vr struct {
+                name string
+                e    *gtk.Entry
+        }
+        var rows []vr
+        for _, ref := range refs {
+                defVal := ""
+                if store.State.PlaybookVars != nil {
+                        if v, ok := store.State.PlaybookVars[ref]; ok {
+                                defVal = v
+                        }
+                }
+                row := boxNew(gtk.ORIENTATION_HORIZONTAL, 4)
+                lbl := labelNew("{{" + ref + "}}")
+                lbl.SetWidthChars(18)
+                lbl.SetXAlign(0)
+                e := entryNew("значение")
+                e.SetText(defVal)
+                row.PackStart(lbl, false, false, 0)
+                row.PackStart(e, true, true, 0)
+                box.PackStart(row, false, false, 3)
+                rows = append(rows, vr{ref, e})
+        }
+        box.ShowAll()
+
+        if d.Run() != gtk.RESPONSE_ACCEPT {
+                return nil, false
+        }
+        out := map[string]string{}
+        for _, r := range rows {
+                out[r.name] = entText(r.e)
+        }
+        return out, true
+}
+
+// ---------- запуск через движок v1.9.0 ----------
+
 func (u *PlaybookUI) runPlaybook() {
+        u.saveMeta()
         ips := u.targetHostsForPlaybook()
         if len(ips) == 0 {
                 warnDialog(app.window, "Нет хостов для выполнения")
@@ -891,22 +1498,40 @@ func (u *PlaybookUI) runPlaybook() {
         if !needCreds() {
                 return
         }
-        // dangerous tasks confirmation
-        for _, t := range store.State.Playbook {
+        tasks := make([]PlaybookTask, len(store.State.Playbook))
+        copy(tasks, store.State.Playbook)
+
+        // сводка перед выполнением
+        if !markupConfirm(app.window, "Сводка перед выполнением", u.buildSummaryText(ips, tasks), "Запустить", "Отмена") {
+                return
+        }
+
+        // форма переменных (если есть ссылки {{…}} без сохранённых значений)
+        vars := map[string]string{}
+        if refs := collectVarRefs(tasks); len(refs) > 0 {
+                var ok bool
+                vars, ok = u.varsForm(refs)
+                if !ok {
+                        return
+                }
+        }
+
+        // опасные задачи — отдельное подтверждение
+        for _, t := range tasks {
                 if t.isDangerous() {
                         if !confirmDanger(app.window, t.Describe(), len(ips)) {
                                 return
                         }
                 }
         }
-        tasks := make([]PlaybookTask, len(store.State.Playbook))
-        copy(tasks, store.State.Playbook)
-        mode := "стоп при ошибке"
-        if store.State.PlaybookContinueOnError {
-                mode = "продолжение при ошибке"
+
+        label := strings.TrimSpace(store.State.PlaybookName)
+        if label == "" {
+                label = "Playbook"
         }
-        logf("accent", "🚀 Playbook: %d задач на %d хост(ов), %s", len(tasks), len(ips), mode)
-        go runPlaybookOnHosts(ips, tasks, "Playbook")
+        s := buildRunSession(ips, tasks, label, vars)
+        logf("accent", "🚀 «%s»: %d задач на %d хост(ов), параллельно до %d", label, len(tasks), len(ips), s.Parallel)
+        go s.runSession()
 }
 
 // saveAsTemplate сохраняет текущий плейбук как шаблон. Возвращает имя

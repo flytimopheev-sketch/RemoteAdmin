@@ -7,6 +7,7 @@ import (
         "os"
         "path/filepath"
         "regexp"
+        "strconv"
         "strings"
         "sync"
         "time"
@@ -41,7 +42,116 @@ type PlaybookTask struct {
         RestartService string   `json:"restart_service,omitempty"`
         PostCommands   []string `json:"post_commands,omitempty"`
         Root           bool     `json:"root,omitempty"`
-        RunIf          string   `json:"run_if,omitempty"` // always | on_success | on_failure
+        RunIf          string   `json:"run_if,omitempty"` // always | on_success | on_failure | rc:N
+
+        // --- управление выполнением (v1.9.0) ---
+        Name          string `json:"name,omitempty"`            // осмысленное название шага («Собрать SMART-показатели»)
+        TimeoutSec    int    `json:"timeout_sec,omitempty"`    // 0 = общий ExecTimeout
+        AllowRetry    bool   `json:"allow_retry,omitempty"`    // «Разрешён повторный запуск»
+        RetryCount    int    `json:"retry_count,omitempty"`    // авто-повторы (0 = без повторов)
+        RetryDelaySec int    `json:"retry_delay_sec,omitempty"`
+}
+
+// StepTitle — имя шага; если не задано — обычное описание.
+func (t PlaybookTask) StepTitle() string {
+        if s := strings.TrimSpace(t.Name); s != "" {
+                return s
+        }
+        return t.Describe()
+}
+
+// stepCommand — рабочая строка шага (вторая строка, моноширинно).
+func (t PlaybookTask) stepCommand() string {
+        switch t.Type {
+        case "command":
+                return t.Source
+        case "script":
+                return "sh " + filepath.Base(t.Source)
+        case "copy":
+                return filepath.Base(t.Source) + " → " + t.Dest
+        case "replace":
+                return filepath.Base(t.Source) + " → " + t.Dest
+        case "replace_with_cmds":
+                s := filepath.Base(t.Source) + " → " + t.Dest
+                if len(t.PostCommands) > 0 {
+                        s += fmt.Sprintf(" + %d команд", len(t.PostCommands))
+                }
+                return s
+        case "edit":
+                return "sed " + t.Source + " (" + t.Search + " → " + t.Replace + ")"
+        case "service":
+                act := t.Action
+                if act == "" {
+                        act = "restart"
+                }
+                return "systemctl " + act + " " + t.Source
+        case "package":
+                act := t.Action
+                if act == "" {
+                        act = "install"
+                }
+                return act + " " + t.Source
+        }
+        return t.Source
+}
+
+// runIfAllows проверяет, разрешено ли запускать шаг с условием v после
+// предыдущего шага (prevErr — был ли сбой, prevRC — код возврата).
+func runIfAllows(v string, prevErr bool, prevRC int) bool {
+        switch v {
+        case "", "always":
+                return true
+        case "on_success":
+                return !prevErr
+        case "on_failure":
+                return prevErr
+        }
+        if strings.HasPrefix(v, "rc:") {
+                want, err := strconv.Atoi(strings.TrimPrefix(v, "rc:"))
+                if err != nil {
+                        return true
+                }
+                rc := prevRC
+                if prevErr && rc == 0 {
+                        rc = 1
+                }
+                return rc == want
+        }
+        return true
+}
+
+// errPolicyRu — человеческое имя политики ошибки.
+func errPolicyRu(v string) string {
+        switch v {
+        case "continue":
+                return "продолжить"
+        case "ask":
+                return "спросить"
+        default:
+                return "остановиться"
+        }
+}
+
+// effectiveErrPolicy — политика ошибки с учётом старой галочки «Прервать при ошибке».
+func (s *State) effectiveErrPolicy() string {
+        if s.PlaybookErrPolicy != "" {
+                return s.PlaybookErrPolicy
+        }
+        if s.PlaybookContinueOnError {
+                return "continue"
+        }
+        return "stop"
+}
+
+// effectiveParallel — лимит параллелизма плейбука.
+func (s *State) effectiveParallel() int {
+        if s.PlaybookParallel > 0 {
+                return s.PlaybookParallel
+        }
+        if s.Settings.MaxParallel > 0 {
+                return s.Settings.MaxParallel
+        }
+        return 8
 }
 
 // runIfRu — русское имя условия выполнения задачи.
@@ -51,6 +161,9 @@ func runIfRu(v string) string {
                 return "⏯ если предыдущая успешна"
         case "on_failure":
                 return "⏯ если предыдущая упала"
+        }
+        if strings.HasPrefix(v, "rc:") {
+                return "⏯ при коде возврата " + strings.TrimPrefix(v, "rc:")
         }
         return ""
 }
@@ -259,6 +372,13 @@ type State struct {
 
         // --- менеджер секретов (v1.8.0): {{ secret:имя }}; значения AES-256-GCM ---
         Secrets map[string]string `json:"secrets,omitempty"`
+
+        // --- плейбук v1.9.0: метаданные и управление выполнения ---
+        PlaybookName        string `json:"playbook_name,omitempty"`           // название плейбука
+        PlaybookDescription string `json:"playbook_description,omitempty"`     // описание
+        PlaybookParallel      int    `json:"playbook_parallel,omitempty"`       // одновременные хосты (0 = из настроек)
+        PlaybookRunTimeoutSec int    `json:"playbook_run_timeout_sec,omitempty"` // общий таймаут (0 = без лимита)
+        PlaybookErrPolicy     string `json:"playbook_err_policy,omitempty"`     // stop | continue | ask
 }
 
 // SessionState — «последняя сессия»: запоминается при закрытии программы,
@@ -774,6 +894,29 @@ func (s *StateStore) expandVars(ip, text string) string {
 }
 
 var varRe = regexp.MustCompile(`\{\{\s*[^{}\s]+\s*\}\}`)
+
+// varExists — объявлена ли переменная (глобальная, хостовая или встроенная);
+// используется проверкой «Проверить перед запуском» (v1.9.0).
+func (s *StateStore) varExists(name string) bool {
+        if strings.HasPrefix(name, "secret:") {
+                return s.SecretValue(strings.TrimPrefix(name, "secret:")) != ""
+        }
+        switch name {
+        case "ip", "hostname", "user", "date", "time", "datetime", "group":
+                return true
+        }
+        if s.State.PlaybookVars != nil {
+                if _, ok := s.State.PlaybookVars[name]; ok {
+                        return true
+                }
+        }
+        for _, m := range s.State.PlaybookHostVars {
+                if _, ok := m[name]; ok {
+                        return true
+                }
+        }
+        return false
+}
 
 // expandTaskVars раскрывает переменные во всех текстовых полях задачи.
 func (s *StateStore) expandTaskVars(ip string, t PlaybookTask) PlaybookTask {

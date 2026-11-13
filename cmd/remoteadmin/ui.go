@@ -14,6 +14,7 @@ import (
 type application struct {
 	window      *gtk.Window
 	log         *LogArea
+	execUI      *ExecPanel
 	statusLabel *gtk.Label
 	statusDot   *gtk.Label
 	dotClass    string
@@ -627,37 +628,13 @@ func (a *application) setStatus(text string) {
 	})
 }
 
-// ---------- global log bar (visible on every tab) ----------
+// ---------- нижняя панель: Выполнение / Вывод / События (v1.9.0) ----------
 
-// buildLogBar creates the app-wide event log: a titled card with
-// Очистить/Экспорт buttons and a scrollable log area.
-func buildLogBar() gtk.IWidget {
-	card, box := cardBox("")
-	head := boxNew(gtk.ORIENTATION_HORIZONTAL, 6)
-	ttl := labelNew("ЖУРНАЛ СОБЫТИЙ — что выполнялось, где и с каким результатом")
-	addClass(ttl, "ratitle")
-	ttl.SetXAlign(0)
-	head.PackStart(ttl, true, true, 0)
-	btnClear := buttonNew("Очистить")
-	btnClear.SetTooltipText("Очистить журнал событий")
-	btnClear.Connect("clicked", func() { app.log.clear() })
-	btnExp := buttonNew("Экспорт")
-	btnExp.SetTooltipText("Сохранить журнал в текстовый файл")
-	btnExp.Connect("clicked", func() { app.log.exportText() })
-	head.PackEnd(btnExp, false, false, 0)
-	head.PackEnd(btnClear, false, false, 0)
-	box.PackStart(head, false, false, 0)
-
-	la, err := newLogArea()
-	if err != nil {
-		la = &LogArea{}
-	}
-	app.log = la
-	sc := scrolled(la.view, 0)
-	sc.SetVExpand(true)
-	box.PackStart(sc, true, true, 0)
-	card.SetSizeRequest(-1, 168)
-	return card
+// buildExecBar создаёт нижнюю панель приложения. Реализация — execpanel.go.
+func buildExecBar() gtk.IWidget {
+	w := buildExecPanel()
+	app.execUI = execPanel
+	return w
 }
 
 // ---------- main assembly ----------
@@ -733,7 +710,7 @@ func buildApp(selftest bool) error {
 	app.pages.SetMarginBottom(6)
 	main.PackStart(app.pages, true, true, 0)
 
-	root.PackStart(buildLogBar(), false, false, 0)
+	root.PackStart(buildExecBar(), false, false, 0)
 	root.PackStart(buildStatusBar(), false, false, 0)
 
 	// --- pages ---
