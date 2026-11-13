@@ -110,6 +110,8 @@ type PlaybookUI struct {
         hostPop     *gtk.Popover
         updatingAct bool
 
+        emptyLbl *gtk.Label // пустое состояние списка задач
+
         // --- v1.9.0: метаданные, цель, динамический запуск, настройки выполнения ---
         metaNameE    *gtk.Entry
         metaDescE    *gtk.Entry
@@ -149,7 +151,6 @@ func newPlaybookUI() *PlaybookUI {
         metaBox.PackStart(u.tgtLbl, false, false, 2)
 
         // ===== нижняя область: список задач + форма =====
-        paned := boxNew(gtk.ORIENTATION_HORIZONTAL, 8)
 
         // ===== left: task list =====
         leftCard, leftBox := cardBox("Последовательность задач")
@@ -173,6 +174,12 @@ func newPlaybookUI() *PlaybookUI {
         sc.Add(u.tree)
         sc.SetVExpand(true)
         leftBox.PackStart(sc, true, true, 0)
+
+        // пустое состояние: вместо пустого прямоугольника — подсказка
+        u.emptyLbl = labelNew("Список задач пуст.\nВыберите тип задачи справа и нажмите «Добавить задачу».\nИли начните с шаблона на вкладке «Шаблоны».")
+        addClass(u.emptyLbl, "raempty")
+        u.emptyLbl.SetJustify(gtk.JUSTIFY_CENTER)
+        leftBox.PackStart(u.emptyLbl, false, false, 8)
 
         // ---- drag-and-drop: перетаскивание задач мышью ----
         u.setupDnD()
@@ -424,9 +431,9 @@ func newPlaybookUI() *PlaybookUI {
         rightBox.PackStart(hint, false, false, 2)
 
         root.PackStart(metaCard, false, false, 0)
-        paned.PackStart(leftCard, true, true, 0)
-        paned.PackStart(rightCard, false, false, 0)
-        root.PackStart(paned, true, true, 0)
+        // левая и правая панели регулируются мышью: границу можно тянуть
+        // влево-вправо, положение запоминается между сеансами
+        root.PackStart(makeHPaned("playbook-lr", leftCard, rightCard, 520), true, true, 0)
 
         u.refresh()
         u.widget = root
@@ -832,8 +839,15 @@ func (u *PlaybookUI) refresh() {
                 title := t.StepTitle()
                 markup := fmt.Sprintf("<b>%d. %s</b>\n<span font=\"Monospace 8.5\" foreground=\"#8fa0c0\">$ %s</span>",
                         i+1, escapeMarkup(title), escapeMarkup(cmd))
+                // задача с повышенными правами — явная янтарная отметка
+                if t.Root {
+                        markup += " <span background=\"#f59e0b\" foreground=\"#0b0e14\"> 🔑root </span>"
+                }
                 _ = u.st.Set(iter, []int{pbColNum, pbColDesc, pbColFull},
                         []interface{}{fmt.Sprintf("%d", i+1), markup, t.DescribeFull() + "\n\n" + taskTip(t)})
+        }
+        if u.emptyLbl != nil {
+                u.emptyLbl.SetVisible(len(store.State.Playbook) == 0)
         }
         u.updateHostBtn()
 }
@@ -1115,9 +1129,20 @@ func (u *PlaybookUI) refreshTargetLine() {
         tasksN := len(store.State.Playbook)
         tgt := fmt.Sprintf("Цель: %s · %d хост(ов) · %d доступны · задач: %d", src, len(ips), available, tasksN)
         if name := strings.TrimSpace(store.State.PlaybookName); name != "" {
-                tgt = fmt.Sprintf("«%s» · %s", name, tgt)
+                tgt = fmt.Sprintf("«%s» · %s", escapeMarkup(name), tgt)
         }
-        u.tgtLbl.SetText(tgt)
+        // среды выбранных хостов видны прямо в строке цели
+        seenEnv := map[string]bool{}
+        for _, ip := range ips {
+                h := store.FindHost(ip)
+                if h == nil || h.Env == "" || seenEnv[h.Env] {
+                        continue
+                }
+                seenEnv[h.Env] = true
+                tgt += " <span background=\"" + envColor(h.Env) + "\" foreground=\"#0b0e14\"> " + escapeMarkup(h.Env) + " </span>"
+        }
+        u.tgtLbl.SetUseMarkup(true)
+        u.tgtLbl.SetMarkup(tgt)
 
         var reasons []string
         switch {
@@ -1500,6 +1525,18 @@ func (u *PlaybookUI) runPlaybook() {
         }
         tasks := make([]PlaybookTask, len(store.State.Playbook))
         copy(tasks, store.State.Playbook)
+
+        // сколько задач потребуют повышенных прав — видно заранее, до запуска
+        rootTasks := 0
+        for _, t := range tasks {
+                if t.Root || store.State.UseRoot {
+                        rootTasks++
+                }
+        }
+        // отдельное подтверждение массового изменения (галочка + среды)
+        if !massGuard(ips, fmt.Sprintf("Плейбук: %d задач", len(tasks)), rootTasks) {
+                return
+        }
 
         // сводка перед выполнением
         if !markupConfirm(app.window, "Сводка перед выполнением", u.buildSummaryText(ips, tasks), "Запустить", "Отмена") {

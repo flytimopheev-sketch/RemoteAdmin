@@ -1,9 +1,9 @@
 #!/bin/bash
-# RemoteAdmin 1.8.0 build script
+# RemoteAdmin 1.10.0 build script
 # Builds: linux binary, RPM (РЕД ОС 8), .deb (Astra/Debian), AppImage
 set -e
 cd "$(dirname "$0")/.."   # repo root
-export VERSION=1.9.0
+export VERSION=1.10.0
 export RELEASE=1
 export PATH="$HOME/rpmroot/usr/bin:$PATH"
 export PKGNAME=remoteadmin
@@ -26,7 +26,7 @@ mkdir -p "$BUILDDIR"/{BUILD,BUILDROOT,RPMS,SOURCES,SPECS,SRPMS}
 TARBALL="$PKGNAME-$VERSION.tar.gz"
 tar --exclude='remoteadmin/.git' --exclude='remoteadmin/remoteadmin' --exclude='remoteadmin/icon.png' --transform "s|^remoteadmin[^/]*|remoteadmin-${VERSION}|" \
   -czf "$BUILDDIR/SOURCES/$TARBALL" -C .. "$(basename $PWD)"
-LD_LIBRARY_PATH="$HOME/rpmroot/usr/lib/x86_64-linux-gnu" RPM_CONFIGDIR="$HOME/rpmroot/usr/lib/rpm" "$HOME/rpmroot/usr/bin/rpmbuild" -ba --define "_topdir $BUILDDIR" \
+LD_LIBRARY_PATH="$HOME/rpmroot/usr/lib/x86_64-linux-gnu:$HOME/gtkroot/usr/lib/x86_64-linux-gnu" RPM_CONFIGDIR="$HOME/rpmroot/usr/lib/rpm" "$HOME/rpmroot/usr/bin/rpmbuild" -ba --define "_topdir $BUILDDIR" \
   --define "_dbpath $BUILDDIR/rpmdb" --define "_rpmconfigdir $HOME/rpmroot/usr/lib/rpm" \
   --define "pkgname $PKGNAME" --define "version $VERSION" --define "release $RELEASE" \
   packaging/rpm/remoteadmin.spec 2>&1 | tail -3

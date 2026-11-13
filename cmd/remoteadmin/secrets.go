@@ -18,7 +18,7 @@ import (
         "sync"
 
         "github.com/gotk3/gotk3/glib"
-	"github.com/gotk3/gotk3/gtk"
+        "github.com/gotk3/gotk3/gtk"
 )
 
 // ---------- хранилище секретов ----------
@@ -130,6 +130,10 @@ func secretValuesForMask() []string {
 
 const maskStr = "••••••"
 
+// secretAssignRe ловит пароли, вписанные прямо в текст: password=…,
+// passwd:…, токен=…, пароль: … — значение маскируется в любом выводе.
+var secretAssignRe = regexp.MustCompile(`(?i)(password|passwd|pwd|pass|secret|token|пароль|пароля)\s*[=:]\s*([^\s"';&]{1,})`)
+
 // redactSecrets маскирует значения секретов и паролей в тексте вывода.
 // Вызывается на границе вывода: журнал, отчёты, LastOutput.
 func redactSecrets(s string) string {
@@ -142,6 +146,14 @@ func redactSecrets(s string) string {
                 }
                 s = strings.ReplaceAll(s, v, maskStr)
         }
+        // пароль, встретившийся прямо в тексте команды или окружения
+        s = secretAssignRe.ReplaceAllStringFunc(s, func(m string) string {
+                i := strings.LastIndexAny(m, "=:")
+                if i < 0 {
+                        return m
+                }
+                return m[:i+1] + maskStr
+        })
         return s
 }
 

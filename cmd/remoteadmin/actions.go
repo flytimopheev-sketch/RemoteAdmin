@@ -78,6 +78,7 @@ func runParallel(ips []string, taskName string, fn func(ip string) (string, erro
         for _, ip := range ips {
                 app.hostsUI.updateStatusRow(ip, "run")
         }
+        startedAt := time.Now()
         doneCh := make(chan struct{}, len(ips))
         go func() {
                 sem := make(chan struct{}, parallel)
@@ -160,6 +161,16 @@ func runParallel(ips []string, taskName string, fn func(ip string) (string, erro
                         Notify(taskName, fmt.Sprintf("Готово: %d ОК, %d ошибок из %d", okN, failN, len(ips)))
                         // внешние уведомления: webhook и e-mail (если настроены)
                         notifyDone(taskName, ips, okN, failN, warnN)
+                        // аудит: кто, когда, что и на каких хостах запускал
+                        auditAppend(AuditEntry{
+                                Action:  taskName,
+                                Hosts:   ips,
+                                Env:     auditEnvsOf(ips),
+                                OK:      okN,
+                                Fail:    failN,
+                                Warn:    warnN,
+                                Seconds: time.Since(startedAt).Seconds(),
+                        })
                         _ = store.Save()
                 })
         }()

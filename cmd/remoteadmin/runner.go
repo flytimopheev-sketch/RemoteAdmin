@@ -319,6 +319,19 @@ func (s *RunSession) runSession() bool {
                 runnerHooks.onRunEnd(s)
         }
         saveRunHistory(s)
+        // аудит: кто, когда, что и на каких хостах запускал
+        okN, failN, warnN, rootN := s.sessionAuditStats()
+        auditAppend(AuditEntry{
+                Action:  "Плейбук: " + s.Label,
+                Hosts:   s.Hosts,
+                Env:     auditEnvsOf(s.Hosts),
+                Root:    rootN,
+                OK:      okN,
+                Fail:    failN,
+                Warn:    warnN,
+                Seconds: s.Finished.Sub(s.Started).Seconds(),
+                Details: fmt.Sprintf("%d задач, параллельно до %d, пользователь «%s»", len(s.Tasks), s.Parallel, s.User),
+        })
         return cancelled
 }
 

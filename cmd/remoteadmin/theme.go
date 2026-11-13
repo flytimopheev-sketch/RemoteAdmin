@@ -342,6 +342,14 @@ notebook > header > tabs > tab:checked { background-color: %s; color: %s; }
 notebook > stack { background-color: transparent; }
 `, p.Dim, panelAlt, p.Text, a(p.Accent, 0.18), p.Text)
 
+        // ---- раздвижные панели / контур изменения размера / пустые состояния ----
+        w(`
+.raedge { background-color: transparent; min-height: 5px; min-width: 5px; }
+.rapaned > separator { background-image: none; background-color: %s; min-width: 3px; min-height: 3px; border: none; }
+.rapaned > separator:hover { background-color: %s; }
+.raempty { color: %s; font-size: 13px; padding: 14px 6px; }
+`, a(p.Text, 0.10), p.Accent, p.Dim)
+
         return b.String()
 }
 

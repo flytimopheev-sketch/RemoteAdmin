@@ -2,7 +2,7 @@
 # Стандартная сборка: make build (нужны GTK3 dev-пакеты: libgtk-3-dev)
 # Полные пакеты (RPM/deb/AppImage): make packages
 
-VERSION ?= 1.9.0
+VERSION ?= 1.10.0
 PKG     := ./cmd/remoteadmin
 BIN     := remoteadmin
 

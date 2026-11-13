@@ -46,6 +46,7 @@ func main() {
                 fmt.Fprintln(os.Stderr, "state:", err)
                 os.Exit(1)
         }
+        auditInit()
         initKnownHosts()
 
         // RA_DEMO_SSH=1 — встроенный демо-хост (принимает любые логин/пароль):

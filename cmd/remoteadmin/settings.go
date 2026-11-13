@@ -113,6 +113,12 @@ func showSettingsDialog() {
         confC.SetActive(s.ConfirmDanger)
         grid2.attach(confC, 1, row2, 1, 1)
         row2++
+
+        massSpin := spinBox(float64(maxInt(s.MassConfirmMin, 0)), 0, 1000)
+        massSpin.SetTooltipText("От скольких хостов операция считается массовой и требует отдельного подтверждения с галочкой. 0 — выкл. Хосты среды «Продакшен» подтверждаются всегда.")
+        grid2.attach(labelNew("Массовое изменение от N хостов (0 — выкл.):"), 0, row2, 1, 1)
+        grid2.attach(massSpin, 1, row2, 1, 1)
+        row2++
         inner.PackStart(grid2.w, false, false, 4)
 
         // monitoring & notifications
@@ -280,6 +286,7 @@ func showSettingsDialog() {
                 s.Retries = int(retSpin.GetValue())
                 s.StrictHostKey = map[int]string{0: "ask", 1: "accept-new", 2: "no"}[strictC.GetActive()]
                 s.ConfirmDanger = confC.GetActive()
+                s.MassConfirmMin = int(massSpin.GetValue())
                 s.MonitorInterval = int(monSpin.GetValue())
                 s.Notifications = notC.GetActive()
                 s.WebhookURL = strings.TrimSpace(entText(eHook))

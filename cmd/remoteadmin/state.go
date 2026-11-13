@@ -22,6 +22,32 @@ type HostEntry struct {
         Status string   `json:"status,omitempty"` // "", "ok", "fail", "warn", "run"
         Tags   []string `json:"tags,omitempty"`   // метки для фильтрации («prod», «web»)
         Fav    bool     `json:"fav,omitempty"`    // избранное (звёздочка)
+        Env    string   `json:"env,omitempty"`    // среда: "", "Тест", "Стейдж", "Продакшен" — цветной бейдж рядом с хостом
+}
+
+// hostEnvs — список сред окружения: используется в редакторе хоста,
+// в списках и в подтверждениях запуска.
+var hostEnvs = []string{"", "Тест", "Стейдж", "Продакшен"}
+
+// envColor — цвет бейджа среды (списки, строка цели, сводки запуска).
+func envColor(env string) string {
+        switch env {
+        case "Продакшен":
+                return "#ef4444" // красный — боевые серверы, осторожно
+        case "Стейдж":
+                return "#f59e0b" // янтарь
+        case "Тест":
+                return "#10b981" // зелёный — можно экспериментировать
+        }
+        return ""
+}
+
+// envBadge — Pango-markup бейджа среды для списков.
+func envBadge(env string) string {
+        if env == "" {
+                return ""
+        }
+        return " <span background='" + envColor(env) + "' foreground='#0b0e14'> " + env + " </span>"
 }
 
 // DisplayName возвращает имя хоста, а если оно не задано — IP.
@@ -316,6 +342,7 @@ type Settings struct {
         Retries         int     `json:"retries"`
         StrictHostKey   string  `json:"strict_hostkey"` // ask | accept-new | no
         ConfirmDanger   bool    `json:"confirm_danger"`
+        MassConfirmMin  int     `json:"mass_confirm_min"` // массовое изменение: подтверждение от N хостов (0 = выключено)
         MonitorInterval int     `json:"monitor_interval"` // sec
         Notifications   bool    `json:"notifications"`
         WebhookURL      string  `json:"webhook_url,omitempty"`
@@ -338,6 +365,7 @@ func defaultSettings() Settings {
                 Retries:         2,
                 StrictHostKey:   "ask",
                 ConfirmDanger:   true,
+                MassConfirmMin:  10,
                 MonitorInterval: 5,
                 Notifications:   true,
         }
@@ -393,6 +421,15 @@ type SessionState struct {
         Nav           string   `json:"nav,omitempty"`
         SelectedHosts []string `json:"selected_hosts,omitempty"`
         Group         string   `json:"group,omitempty"`
+        Paned         map[string]int `json:"paned,omitempty"` // положения разделителей панелей (делители можно таскать мышью)
+}
+
+// panedPos — сохранённое положение разделителя (0 = не сохранено).
+func (s SessionState) panedPos(name string) int {
+        if s.Paned == nil {
+                return 0
+        }
+        return s.Paned[name]
 }
 
 // ---------- state manager ----------
@@ -414,6 +451,15 @@ func configDir() (string, error) {
                 return "", err
         }
         return filepath.Join(home, ".config", AppName), nil
+}
+
+// auditPath — путь к файлу журнала аудита (кто/когда/что/на каких хостах).
+func auditPath() string {
+        dir, err := configDir()
+        if err != nil {
+                return ""
+        }
+        return filepath.Join(dir, "audit.jsonl")
 }
 
 func initStateStore() error {

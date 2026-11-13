@@ -226,6 +226,14 @@ func newHostsUI() *HostsUI {
         hideCol(u.hostTree, HCOL_COLOR)
         selH, _ := u.hostTree.GetSelection()
         selH.SetMode(gtk.SELECTION_MULTIPLE)
+        // выбор хостов мгновенно отражается в строке цели плейбука
+        selH.Connect("changed", func() {
+                glibIdle(func() {
+                        if app != nil && app.pbUI != nil {
+                                app.pbUI.refreshTargetLine()
+                        }
+                })
+        })
 
         // двойной клик — редактирование имени/адреса/группы
         u.hostTree.Connect("row-activated", func(_ *gtk.TreeView, path *gtk.TreePath, _ *gtk.TreeViewColumn) {
@@ -392,8 +400,17 @@ func newHostsUI() *HostsUI {
                         if strings.TrimSpace(cmd) == "" {
                                 return true
                         }
+                        ips := u.selectedHosts()
+                        if len(ips) == 0 {
+                                warnDialog(app.window, "Отметьте хосты в списке слева — на них уйдёт команда")
+                                return true
+                        }
+                        // массовое изменение — отдельное подтверждение
+                        if !massGuard(ips, "Быстрая команда: "+cmd, 0) {
+                                return true
+                        }
                         hist.push(cmd)
-                        go runQuickCommand(u.selectedHosts(), cmd)
+                        go runQuickCommand(ips, cmd)
                         cmdE.SetText("")
                         return true
                 case gdk.KEY_Up:
@@ -440,9 +457,12 @@ func newHostsUI() *HostsUI {
         irow.PackStart(btnExp, true, true, 0)
         rightBox.PackStart(irow, false, false, 0)
 
-        root.PackStart(leftCard, false, false, 0)
-        root.PackStart(midCard, true, true, 0)
-        root.PackStart(rightCard, false, false, 0)
+        // панели регулируются мышью: границы можно тянуть влево-вправо,
+        // положение запоминается между сеансами
+        root.PackStart(makeHPaned("hosts-groups",
+                leftCard,
+                makeHPaned("hosts-actions", midCard, rightCard, 480),
+                190), true, true, 0)
 
         u.refreshAll()
         u.widget = root
@@ -621,6 +641,8 @@ func (u *HostsUI) refreshHostList() {
                 if h.Fav {
                         disp = "★ " + disp
                 }
+                // среда рядом с хостом: цветной бейдж «Тест»/«Продакшен»
+                disp += envBadge(h.Env)
                 tags := ""
                 for i, t := range h.Tags {
                         if i > 0 {
@@ -638,7 +660,7 @@ func (u *HostsUI) refreshHostList() {
 }
 
 func hostMatchesFilter(h HostEntry, filter string) bool {
-        for _, s := range []string{h.IP, h.Name, h.Group} {
+        for _, s := range []string{h.IP, h.Name, h.Group, h.Env} {
                 if strings.Contains(strings.ToLower(s), filter) {
                         return true
                 }
@@ -866,6 +888,9 @@ func (u *HostsUI) scriptRunDialog() {
         box.ShowAll()
 
         if d.Run() == gtk.RESPONSE_ACCEPT {
+                if !massGuard(ips, "Скрипт "+filepath.Base(fn), map[bool]int{true: 1, false: 0}[store.State.UseRoot]) {
+                        return
+                }
                 logf("info", "📜 Скрипт %s на %d хост(ов) — подтверждено", filepath.Base(fn), len(ips))
                 go runQuickScript(ips, fn)
         }
@@ -891,6 +916,9 @@ func (u *HostsUI) replaceRunDialog() {
         }
         dst = strings.TrimSpace(dst)
         if !confirmDanger(app.window, "замена файла "+filepath.Base(fn)+" → "+dst+"\n\nХосты: "+strings.Join(ips, ", "), len(ips)) {
+                return
+        }
+        if !massGuard(ips, "Замена файла "+filepath.Base(fn)+" → "+dst, map[bool]int{true: 1, false: 0}[store.State.UseRoot]) {
                 return
         }
         logf("warn", "🔄 Замена файла %s → %s на %d хост(ах) — подтверждено", filepath.Base(fn), dst, len(ips))
@@ -1154,11 +1182,27 @@ func (u *HostsUI) editHostDialog(ip string) {
         tagE.SetText(strings.Join(h.Tags, ", "))
         g1.attach(labelNew("Метки:"), 0, 3, 1, 1)
         g1.attach(tagE, 1, 3, 1, 1)
+        // среда: показывается цветным бейджем рядом с хостом и учитывается
+        // при подтверждении массовых изменений
+        envC, _ := gtk.ComboBoxTextNew()
+        envC.AppendText("Не задана")
+        for _, e := range hostEnvs[1:] {
+                envC.AppendText(e)
+        }
+        envActive := 0
+        for i, e := range hostEnvs {
+                if e != "" && e == h.Env {
+                        envActive = i
+                }
+        }
+        envC.SetActive(envActive)
+        g1.attach(labelNew("Среда:"), 0, 4, 1, 1)
+        g1.attach(envC, 1, 4, 1, 1)
         favC, _ := gtk.CheckButtonNewWithLabel("★ Избранный хост (показывается со звёздочкой)")
         favC.SetActive(h.Fav)
-        g1.attach(favC, 1, 4, 1, 1)
+        g1.attach(favC, 1, 5, 1, 1)
         box.PackStart(g1.w, false, false, 4)
-        hint := labelNew("Имя — как хост показывается во всех списках и отчётах.\nАдрес — IP или хост:порт; метки — для быстрого поиска (например, prod).")
+        hint := labelNew("Имя — как хост показывается во всех списках и отчётах.\nАдрес — IP или хост:порт; метки — для поиска;\nсреда («Тест»/«Продакшен») — цветной бейдж и допподтверждение массовых изменений.")
         addClass(hint, "ramuted")
         hint.SetXAlign(0)
         box.PackStart(hint, false, false, 2)
@@ -1188,6 +1232,14 @@ func (u *HostsUI) editHostDialog(ip string) {
                         }
                 }
                 store.SetTags(ip, tags)
+                // среда: «Не задана» = пустая строка
+                newEnv := ""
+                if envC.GetActive() > 0 {
+                        newEnv = envC.GetActiveText()
+                }
+                if env := store.FindHost(ip); env != nil {
+                        env.Env = newEnv
+                }
                 if favC.GetActive() != h.Fav {
                         store.ToggleFav(ip)
                 }
