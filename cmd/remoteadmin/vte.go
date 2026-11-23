@@ -127,6 +127,32 @@ type vteTerm struct {
         dead     bool
 }
 
+// markDead помечает терминал мёртвым ДО фактического уничтожения виджета.
+// Все последующие вызовы в C (feed, опрос размера, ввод) пропускаются —
+// иначе use-after-free и падение программы при закрытии многих терминалов
+// (жалоба v1.11.0 «программа иногда вылетает»).
+func (v *vteTerm) markDead() {
+        if v == nil {
+                return
+        }
+        v.mu.Lock()
+        v.dead = true
+        v.ptr = nil
+        v.mu.Unlock()
+        vteRegDel(v)
+}
+
+// livePtr возвращает указатель под mutex (nil, если терминал уничтожен).
+func (v *vteTerm) livePtr() *C.VteTerminal {
+        if v == nil {
+                return nil
+        }
+        v.mu.Lock()
+        p := v.ptr
+        v.mu.Unlock()
+        return p
+}
+
 // реестр активных VTE — общий опрос размеров (без сигналов)
 var (
         vteRegMu  sync.Mutex
@@ -169,22 +195,25 @@ func vtePollLoop() {
                         return
                 }
                 for _, v := range items {
-                        if v == nil || v.ptr == nil {
+                        if v == nil {
                                 continue
                         }
                         v.mu.Lock()
                         cb := v.onResize
                         lastR, lastC := v.lastRows, v.lastCols
+                        ptr := v.ptr
                         v.mu.Unlock()
-                        if cb == nil {
+                        if cb == nil || ptr == nil {
                                 continue
                         }
                         var rows, cols C.int
                         // вызов в главный поток GTK — VTE не потокобезопасен
                         done := make(chan struct{})
                         glibIdle(func() {
-                                if v.ptr != nil {
-                                        C.ra_vte_size(v.ptr, &rows, &cols)
+                                // повторная проверка в UI-потоке: виджет могли
+                                // уничтожить, пока опрос стоял в очереди
+                                if p := v.livePtr(); p != nil {
+                                        C.ra_vte_size(p, &rows, &cols)
                                 }
                                 close(done)
                         })
@@ -219,35 +248,43 @@ func newVTE(container *gtk.Box, isLight bool) *vteTerm {
 
 // attachPTY подключает PTY к ssh-сессии. Возвращает slave fd для моста.
 func (v *vteTerm) attachPTY() int {
-        return int(C.ra_vte_attach_pty(v.ptr))
+        ptr := v.livePtr()
+        if ptr == nil {
+                return -1
+        }
+        return int(C.ra_vte_attach_pty(ptr))
 }
 
 // feed печатает текст в терминал как будто его вывела удалённая сторона
 // (служебные сообщения: «подключено», «сессия закрыта» и т.п.).
+// Вызывается только из главного потока GTK; уничтоженный терминал игнорируется.
 func (v *vteTerm) feed(text string) {
-        if v == nil || v.ptr == nil {
+        ptr := v.livePtr()
+        if ptr == nil {
                 return
         }
         c := C.CString(text)
         defer C.free(unsafe.Pointer(c))
-        C.vte_terminal_feed(v.ptr, c, C.glong(len(text)))
+        C.vte_terminal_feed(ptr, c, C.glong(len(text)))
 }
 
 // feedChild отправляет данные «как с клавиатуры» (в сторону child).
 func (v *vteTerm) feedChild(data []byte) {
-        if v == nil || v.ptr == nil || len(data) == 0 {
+        ptr := v.livePtr()
+        if ptr == nil || len(data) == 0 {
                 return
         }
         c := C.CBytes(data)
         defer C.free(c)
-        C.vte_terminal_feed_child(v.ptr, (*C.char)(c), C.glong(len(data)))
+        C.vte_terminal_feed_child(ptr, (*C.char)(c), C.glong(len(data)))
 }
 
 func (v *vteTerm) setInputEnabled(on bool) {
-        if v == nil || v.ptr == nil {
+        ptr := v.livePtr()
+        if ptr == nil {
                 return
         }
-        C.ra_vte_input_enabled(v.ptr, gbool(on))
+        C.ra_vte_input_enabled(ptr, gbool(on))
 }
 
 func gbool(b bool) C.gboolean {

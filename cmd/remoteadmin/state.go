@@ -407,6 +407,10 @@ type State struct {
         PlaybookParallel      int    `json:"playbook_parallel,omitempty"`       // одновременные хосты (0 = из настроек)
         PlaybookRunTimeoutSec int    `json:"playbook_run_timeout_sec,omitempty"` // общий таймаут (0 = без лимита)
         PlaybookErrPolicy     string `json:"playbook_err_policy,omitempty"`     // stop | continue | ask
+
+        // --- терминалы (v1.12.0): false (по умолчанию) = отдельные окна,
+        // которые можно перемещать/сворачивать/разворачивать; true = сетка ---
+        TermGrid bool `json:"term_grid,omitempty"`
 }
 
 // SessionState — «последняя сессия»: запоминается при закрытии программы,

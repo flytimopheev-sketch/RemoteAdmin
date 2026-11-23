@@ -381,10 +381,19 @@ func showAboutDialog() {
         box.SetMarginEnd(18)
         box.SetMarginTop(14)
 
-        logo := labelNew("RA")
-        addClass(logo, "logochip")
-        logo.SetHAlign(gtk.ALIGN_CENTER)
-        logo.SetSizeRequest(64, -1)
+        // v1.12.0: настоящий фирменный логотип вместо текстового чипа «RA»
+        var logo gtk.IWidget
+        if pb := logoPixbuf(84); pb != nil {
+                img, _ := gtk.ImageNewFromPixbuf(pb)
+                img.SetHAlign(gtk.ALIGN_CENTER)
+                logo = img
+        } else {
+                lb := labelNew("RA")
+                addClass(lb, "logochip")
+                lb.SetHAlign(gtk.ALIGN_CENTER)
+                lb.SetSizeRequest(64, -1)
+                logo = lb
+        }
         t1 := labelNew("")
         t1.SetMarkup("<span size=\"x-large\" weight=\"bold\">RemoteAdmin</span>\n<span foreground=\"#8b93a5\">версия " + AppVersion + " · РЕД ОС 8</span>")
         t1.SetJustify(gtk.JUSTIFY_CENTER)

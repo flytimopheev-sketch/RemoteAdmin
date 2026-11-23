@@ -487,8 +487,18 @@ func buildHeader() gtk.IWidget {
         h.PackStart(mkTL("tl-yel", "Свернуть", func() { app.window.Iconify() }), false, false, 0)
         h.PackStart(mkTL("tl-grn", "Развернуть", func() { app.toggleMax() }), false, false, 0)
 
-        logo := labelNew("RA")
-        addClass(logo, "logochip")
+        // v1.12.0: фирменный логотип (градиентный квадрат с монитором и
+        // узлами кластера) вместо текстового чипа «RA»
+        var logo gtk.IWidget
+        if pb := logoPixbuf(28); pb != nil {
+                img, _ := gtk.ImageNewFromPixbuf(pb)
+                img.SetTooltipText("RemoteAdmin")
+                logo = img
+        } else {
+                lb := labelNew("RA")
+                addClass(lb, "logochip")
+                logo = lb
+        }
         title := labelNew(AppName)
         addClass(title, "title")
         ver := labelNew("v" + AppVersion)
@@ -957,12 +967,13 @@ func buildApp(selftest bool) error {
         app.pages.SetMarginTop(10)
         app.pages.SetMarginBottom(6)
 
-        // Нижняя панель «Выполнение / Вывод / События» — теперь вертикальная
+        // Нижняя панель «Выполнение / Вывод / События» — вертикальная
         // раздвижная область: её высоту можно потянуть мышью, положение
-        // запоминается. Гарантированная минимальная высота — 170 px, поэтому
-        // панель всегда видна снизу, а не «уезжает» за экран.
+        // запоминается. Минимумы снижены (v1.12.0): разделитель теперь можно
+        // тянуть СУЩЕСТВЕННО ниже — панель может занять до ~2/3 окна
+        // (жалоба v1.11.0: «нельзя потянуть чуть ниже»).
         execW := buildExecBar()
-        execW.ToWidget().SetSizeRequest(-1, 170)
+        execW.ToWidget().SetSizeRequest(-1, 150)
         // Страницы оборачиваются в прокрутку: иначе минимальный размер
         // контента раздувает окно выше экрана (на Windows-ноутбуках
         // 1366x768 нижняя панель «Выполнение/Вывод/События» целиком
@@ -972,7 +983,7 @@ func buildApp(selftest bool) error {
         psc, _ := gtk.ScrolledWindowNew(nil, nil)
         psc.SetPolicy(gtk.POLICY_AUTOMATIC, gtk.POLICY_AUTOMATIC)
         psc.SetMinContentWidth(920)
-        psc.SetMinContentHeight(300)
+        psc.SetMinContentHeight(160)
         psc.Add(app.pages)
         app.execSplit = makeVPaned("execbar", psc, execW, 460)
         main.PackStart(app.execSplit, true, true, 0)

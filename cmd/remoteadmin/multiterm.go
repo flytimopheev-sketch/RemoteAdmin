@@ -33,6 +33,8 @@ type MultiTermUI struct {
         input    *gtk.Entry
         bcastLbl *gtk.Label
         suC      *gtk.CheckButton
+        winModeC *gtk.CheckButton // «В отдельных окнах» (v1.12.0)
+        ph       *gtk.Label       // подсказка-плейсхолдер первой сетки
         sessions map[string]*termSession
         mu       sync.Mutex
         running  bool
@@ -40,11 +42,12 @@ type MultiTermUI struct {
 
 // termCell bundles the widgets of one terminal pane.
 type termCell struct {
-        box   *gtk.Box         // framed wrapper attached into the grid
-        head  *gtk.Label       // status line
-        send  *gtk.CheckButton // «⇉ отправлять сюда broadcast»
-        vteBox *gtk.Box        // контейнер для VTE + скроллбара
-        vte   *vteTerm
+        box    *gtk.Box         // framed wrapper attached into the grid/window
+        head   *gtk.Label       // status line
+        send   *gtk.CheckButton // «⇉ отправлять сюда broadcast»
+        vteBox *gtk.Box         // контейнер для VTE + скроллбара
+        vte    *vteTerm
+        win    *gtk.Window // отдельное окно (если терминал откреплён) — v1.12.0
 }
 
 type termSession struct {
@@ -124,7 +127,18 @@ func newMultiTermUI() *MultiTermUI {
         u.suC.SetActive(store.State.UseRoot)
         toolbar.PackStart(u.suC, false, false, 0)
 
-        hint := labelNew("Каждый терминал — настоящий (VTE): печатайте прямо в ячейке, mc/top работают. ⇉ — broadcast, ✕ — закрыть.")
+        // v1.12.0: терминалы в отдельных окнах — каждое окно можно свободно
+        // перемещать, сворачивать и разворачивать средствами оконного менеджера
+        u.winModeC, _ = gtk.CheckButtonNewWithLabel("В отдельных окнах")
+        u.winModeC.SetActive(!store.State.TermGrid)
+        u.winModeC.SetTooltipText("Каждый терминал — отдельное окно: перемещается, сворачивается и разворачивается как обычное окно.\nСнимите галочку, чтобы вернуть сетку терминалов внутри вкладки.")
+        u.winModeC.Connect("toggled", func() {
+                store.State.TermGrid = !u.winModeC.GetActive()
+                _ = store.Save()
+        })
+        toolbar.PackStart(u.winModeC, false, false, 0)
+
+        hint := labelNew("Каждый терминал — настоящий (VTE): печатайте прямо в него, mc/top работают. ⇉ — broadcast, ⤢ — в отдельное окно, ✕ — закрыть.")
         hint.SetLineWrap(true)
         hsc, _ := hint.GetStyleContext()
         hsc.AddClass("ramuted")
@@ -141,11 +155,12 @@ func newMultiTermUI() *MultiTermUI {
         root.PackStart(sc, true, true, 0)
 
         // placeholder when nothing is connected
-        ph := labelNew("Нет активных сессий.\n\n1. Отметьте хосты на вкладке «Хосты»\n2. Нажмите «Подключить выбранные»\n3. Щёлкните по нужному терминалу и вводите команды прямо в него\n4. Или используйте Broadcast внизу — команда уйдёт во все терминалы с галочкой ⇉\n\nmc, top, vim и другие полноэкранные программы работают как в настоящем терминале")
+        ph := labelNew("Нет активных сессий.\n\n1. Отметьте хосты на вкладке «Хосты»\n2. Нажмите «Подключить выбранные»\n3. По умолчанию каждый терминал открывается В СВОЁМ ОКНЕ — его можно\n    перемещать, сворачивать и разворачивать; печатайте прямо в него\n4. Или используйте Broadcast внизу — команда уйдёт во все терминалы с галочкой ⇉\n5. Кнопка ⤢ в ячейке открепляет терминал в отдельное окно\n\nmc, top, vim и другие полноэкранные программы работают как в настоящем терминале")
         ph.SetJustify(gtk.JUSTIFY_CENTER)
         ph.SetHAlign(gtk.ALIGN_CENTER)
         ph.SetVAlign(gtk.ALIGN_CENTER)
-        addClass(ph, "ramuted")
+        addClass(ph, "raempty")
+        u.ph = ph
         u.grid.Attach(ph, 0, 0, 1, 1)
 
         inputRow := boxNew(gtk.ORIENTATION_HORIZONTAL, 8)
@@ -192,7 +207,10 @@ func (u *MultiTermUI) startAll() {
                 u.closeSession(s)
         }
         u.sessions = map[string]*termSession{}
-        glibIdle(func() { u.grid = resetGrid(u.grid) })
+        winMode := u.winModeC.GetActive()
+        if !winMode {
+                glibIdle(func() { u.grid = resetGrid(u.grid) })
+        }
         // сетка: 1–2 хоста — одна колонка (крупные ячейки), 3–4 — две,
         // 5+ — три, чтобы терминалы оставались читаемыми
         cols := 1
@@ -212,14 +230,22 @@ func (u *MultiTermUI) startAll() {
                 // everything UI-related first, THEN the session goroutine —
                 // otherwise "подключено" header appends outrun the placeholder
                 glibIdle(func() {
-                        u.grid.Attach(box, col, row, 1, 1)
+                        if winMode {
+                                // v1.12.0: каждое окно отдельно — перемещение,
+                                // сворачивание и разворачивание работают
+                                u.openTermWindow(s)
+                        } else {
+                                u.grid.Attach(box, col, row, 1, 1)
+                                u.grid.ShowAll()
+                        }
                         u.setHead(s, "◌", "#60a5fa", "подключение…")
-                        u.grid.ShowAll()
                         go u.runSession(s)
                 })
         }
         u.refreshBcastLabel()
-        logf("info", "⌨ Терминалы: открывается %d сессий (VTE); su → root: %v", len(ips), suWanted)
+        u.updatePlaceholder()
+        logf("info", "⌨ Терминалы: открывается %d сессий (VTE); su → root: %v; режим: %s",
+                len(ips), suWanted, map[bool]string{true: "отдельные окна", false: "сетка"}[winMode])
 }
 
 func resetGrid(old *gtk.Grid) *gtk.Grid {
@@ -262,9 +288,16 @@ func (u *MultiTermUI) newTermCellFor(s *termSession) termCell {
         addClass(closeBtn, "termclose")
         closeBtn.SetTooltipText("Закрыть только этот терминал")
         closeBtn.Connect("clicked", func() { u.closeOne(s) })
+        // ⤢ (v1.12.0): открепить ячейку сетки в отдельное окно — его можно
+        // перемещать, сворачивать и разворачивать как обычное окно
+        popBtn, _ := gtk.ButtonNewWithLabel("⤢")
+        addClass(popBtn, "termclose")
+        popBtn.SetTooltipText("Открепить этот терминал в отдельное окно\n(окно можно перемещать, сворачивать и разворачивать)")
+        popBtn.Connect("clicked", func() { u.detachToWindow(s) })
         headRow.PackStart(sendC, false, false, 0)
         headRow.PackStart(head, true, true, 0)
         headRow.PackEnd(closeBtn, false, false, 0)
+        headRow.PackEnd(popBtn, false, false, 0)
 
         // --- настоящий терминал VTE ---
         vteBox := boxNew(gtk.ORIENTATION_HORIZONTAL, 0)
@@ -285,6 +318,63 @@ func (u *MultiTermUI) newTermCellFor(s *termSession) termCell {
         box.PackStart(headRow, false, false, 0)
         box.PackStart(vteBox, true, true, 0)
         return termCell{box: box, head: head, send: sendC, vteBox: vteBox, vte: v}
+}
+
+// openTermWindow открывает терминал сессии в отдельном окне оконного
+// менеджера (v1.12.0): окно можно свободно перемещать, сворачивать и
+// разворачивать, при закрытии окна сессия гасится.
+func (u *MultiTermUI) openTermWindow(s *termSession) {
+        if s == nil || s.cell.win != nil {
+                return
+        }
+        win, err := gtk.WindowNew(gtk.WINDOW_TOPLEVEL)
+        if err != nil {
+                return
+        }
+        title := s.ip + " — Терминал"
+        if s.user != "" {
+                title = s.user + "@" + s.ip + " — Терминал"
+        }
+        win.SetTitle(AppName + " · " + title)
+        win.SetDefaultSize(880, 540)
+        win.SetPosition(gtk.WIN_POS_NONE)
+        win.Add(s.cell.box)
+        win.Connect("delete-event", func() bool {
+                u.closeOne(s)
+                return true
+        })
+        s.cell.win = win
+        win.ShowAll()
+}
+
+// detachToWindow открепляет ячейку сетки в отдельное окно (кнопка ⤢).
+func (u *MultiTermUI) detachToWindow(s *termSession) {
+        if s == nil || s.cell.win != nil {
+                return
+        }
+        glibIdle(func() {
+                if u.grid != nil && s.cell.box != nil {
+                        u.grid.Remove(s.cell.box)
+                }
+                u.openTermWindow(s)
+        })
+        logf("info", "⌨ Терминал %s откреплён в отдельное окно", s.ip)
+}
+
+// updatePlaceholder обновляет подсказку первой сетки (когда терминалы
+// открыты в отдельных окнах — показывает их количество).
+func (u *MultiTermUI) updatePlaceholder() {
+        glibIdle(func() {
+                if u.ph == nil {
+                        return
+                }
+                u.mu.Lock()
+                n := len(u.sessions)
+                u.mu.Unlock()
+                if n > 0 {
+                        u.ph.SetText(fmt.Sprintf("Открыто терминалов: %d — каждый в отдельном окне: перемещается, сворачивается, разворачивается.\nBroadcast-строка внизу уходит во все терминалы с галочкой ⇉. «Закрыть все» гасит все окна.", n))
+                }
+        })
 }
 
 // setHead updates the per-cell status line: marker, color and suffix text.
@@ -319,6 +409,15 @@ func (u *MultiTermUI) termMsgTag(s *termSession, text, tag string) {
 }
 
 func (u *MultiTermUI) runSession(s *termSession) {
+        // паника в goroutine сессии убивала весь процесс (жалоба: «сама
+        // программа иногда вылетает») — теперь пишем в журнал и гасим сессию
+        defer func() {
+                if r := recover(); r != nil {
+                        logf("err", "⌨ Сбой сессии %s: %v", s.ip, r)
+                        s.alive = false
+                        u.setHead(s, "✕", "#f87171", "внутренний сбой сессии")
+                }
+        }()
         creds := buildCreds(s.ip)
         s.user = creds.User
         u.setHead(s, "◌", "#60a5fa", "подключение…")
@@ -331,6 +430,12 @@ func (u *MultiTermUI) runSession(s *termSession) {
                 return
         }
         s.cl = cl
+        // заголовок отдельного окна — логин@хост
+        glibIdle(func() {
+                if s.cell.win != nil {
+                        s.cell.win.SetTitle(AppName + " · " + s.user + "@" + s.ip + " — Терминал")
+                }
+        })
         sess, err := cl.NewSession()
         if err != nil {
                 u.setHead(s, "✕", "#f87171", "нет сессии")
@@ -501,8 +606,10 @@ func (u *MultiTermUI) stopSession(s *termSession) {
         })
 }
 
-// closeOne закрывает ОДИН терминал: сессия гасится в фоне, ячейка убирается
-// из сетки; когда терминалов не осталось — кнопка «Подключить» снова живая.
+// closeOne закрывает ОДИН терминал: сессия гасится в фоне, ячейка/окно
+// уничтожаются; когда терминалов не осталось — кнопка «Подключить» снова живая.
+// Порядок важен: СНАЧАЛА vte.markDead() (гасит все C-вызовы в VTE), ПОТОМ
+// Destroy виджета — иначе use-after-free и падение при многих терминалах.
 func (u *MultiTermUI) closeOne(s *termSession) {
         if s == nil {
                 return
@@ -513,6 +620,7 @@ func (u *MultiTermUI) closeOne(s *termSession) {
         u.mu.Unlock()
         s.closed = true
         u.stopSession(s)
+        s.cell.vte.markDead()
         go func() {
                 if s.alive && s.sess != nil {
                         _ = s.sess.Signal(ssh.SIGKILL)
@@ -524,13 +632,17 @@ func (u *MultiTermUI) closeOne(s *termSession) {
                 s.alive = false
         }()
         glibIdle(func() {
+                if s.cell.win != nil {
+                        s.cell.win.Destroy()
+                        s.cell.win = nil
+                }
                 if u.grid != nil && s.cell.box != nil {
                         u.grid.Remove(s.cell.box)
                         s.cell.box.Destroy()
                 }
                 u.refreshBcastLabel()
+                u.updatePlaceholder()
         })
-        vteRegDel(s.cell.vte)
         if empty {
                 u.running = false
         }
@@ -555,12 +667,17 @@ func (u *MultiTermUI) closeSession(s *termSession) {
                 s.cl.Close()
         }
         s.alive = false
-        vteRegDel(s.cell.vte)
+        s.cell.vte.markDead()
+        // отдельное окно гасим сразу (v1.12.0)
+        if s.cell.win != nil {
+                w := s.cell.win
+                s.cell.win = nil
+                glibIdle(func() { w.Destroy() })
+        }
 }
 
 func (u *MultiTermUI) closeAll() {
         u.mu.Lock()
-        defer u.mu.Unlock()
         n := 0
         for _, s := range u.sessions {
                 if s.alive {
@@ -570,6 +687,7 @@ func (u *MultiTermUI) closeAll() {
         }
         u.sessions = map[string]*termSession{}
         u.running = false
+        u.mu.Unlock()
         if n > 0 {
                 logf("info", "⏹ Все терминалы закрыты (%d)", n)
         }

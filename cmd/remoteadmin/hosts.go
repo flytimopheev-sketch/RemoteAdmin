@@ -379,14 +379,44 @@ func newHostsUI() *HostsUI {
         sep1, _ := gtk.SeparatorNew(gtk.ORIENTATION_HORIZONTAL)
         rightBox.PackStart(sep1, false, false, 2)
 
-        qrow1 := boxNew(gtk.ORIENTATION_HORIZONTAL, 3)
-        btnPing := buttonNew("Ping")
-        btnPing.Connect("clicked", func() { runPingAction(u.selectedHosts()) })
-        btnInfo := buttonNew("Инфо о системе")
-        btnInfo.Connect("clicked", func() { runSysInfoAction(u.selectedHosts()) })
-        qrow1.PackStart(btnPing, true, true, 0)
-        qrow1.PackStart(btnInfo, true, true, 0)
-        rightBox.PackStart(qrow1, false, false, 0)
+        // ===== v1.12.0: аккуратная сетка быстрых действий (2 колонки) =====
+        // «Заменить файл…» убрана по отзыву: загрузкой/заменой файлов занимается
+        // вкладка SFTP (двухпанельный менеджер), а дублирующая кнопка только
+        // замусоривала панель. Вместо неё — «Диски» и «Обновления».
+        actGrid, _ := gtk.GridNew()
+        actGrid.SetRowSpacing(5)
+        actGrid.SetColumnSpacing(5)
+        mkAct := func(row, col, span int, label, tip string, fn func()) *gtk.Button {
+                b := buttonNew(label)
+                b.SetTooltipText(tip)
+                b.SetHExpand(true)
+                actGrid.Attach(b, col, row, span, 1)
+                b.Connect("clicked", func() { fn() })
+                return b
+        }
+        mkAct(0, 0, 1, "Ping",
+                "Проверить доступность порта SSH (TCP 22) на выбранных хостах",
+                func() { runPingAction(u.selectedHosts()) })
+        mkAct(0, 1, 1, "Инфо о системе",
+                "ОС, ядро, CPU, память, диск и аптайм каждого выбранного хоста",
+                func() { runSysInfoAction(u.selectedHosts()) })
+        btnScript := mkAct(1, 0, 2, "Скрипт…",
+                "Выбрать скрипт, посмотреть его и подтвердить запуск на выбранных хостах",
+                func() { u.scriptRunDialog() })
+        addClass(btnScript, "suggested")
+        mkAct(2, 0, 1, "Диски (df -h)",
+                "Заполненность файловых систем на выбранных хостах",
+                func() { runDiskAction(u.selectedHosts()) })
+        mkAct(2, 1, 1, "Обновления",
+                "Проверить доступные обновления пакетов (dnf check-update) — без установки",
+                func() { runUpdatesAction(u.selectedHosts()) })
+        mkAct(3, 0, 1, "Терминалы",
+                "Перейти к мульти-терминалам: текущее выделение хостов будет подключено",
+                func() { app.activateNav("multiterm") })
+        mkAct(3, 1, 1, "SFTP",
+                "Открыть двухпанельный файловый менеджер для обмена файлами с хостами",
+                func() { app.activateNav("sftp") })
+        rightBox.PackStart(actGrid, false, false, 0)
 
         cmdE, _ := gtk.EntryNew()
         cmdE.SetPlaceholderText("Быстрая команда… (↑↓ — история)")
@@ -422,18 +452,6 @@ func newHostsUI() *HostsUI {
                 }
                 return false
         })
-
-        qrow2 := boxNew(gtk.ORIENTATION_HORIZONTAL, 3)
-        btnScript := buttonNew("Скрипт…")
-        addClass(btnScript, "suggested")
-        btnScript.SetTooltipText("Выбрать скрипт, посмотреть его и подтвердить запуск на выбранных хостах")
-        btnScript.Connect("clicked", func() { u.scriptRunDialog() })
-        btnRepl := buttonNew("Заменить файл…")
-        btnRepl.SetTooltipText("Выбрать локальный файл, указать удалённый путь и подтвердить замену на выбранных хостах")
-        btnRepl.Connect("clicked", func() { u.replaceRunDialog() })
-        qrow2.PackStart(btnScript, true, true, 0)
-        qrow2.PackStart(btnRepl, true, true, 0)
-        rightBox.PackStart(qrow2, false, false, 0)
 
         sep2, _ := gtk.SeparatorNew(gtk.ORIENTATION_HORIZONTAL)
         rightBox.PackStart(sep2, false, false, 2)
@@ -894,35 +912,6 @@ func (u *HostsUI) scriptRunDialog() {
                 logf("info", "📜 Скрипт %s на %d хост(ов) — подтверждено", filepath.Base(fn), len(ips))
                 go runQuickScript(ips, fn)
         }
-}
-
-// replaceRunDialog — замена файла с явным подтверждением: файл, путь,
-// список хостов и предупреждение о перезаписи в одном потоке действий.
-func (u *HostsUI) replaceRunDialog() {
-        ips, ok := u.requireSelection()
-        if !ok {
-                return
-        }
-        if !needCreds() {
-                return
-        }
-        fn := fileChooser(app.window, "Локальный файл для замены", gtk.FILE_CHOOSER_ACTION_OPEN, "")
-        if fn == "" {
-                return
-        }
-        dst, ok := entryDialog(app.window, "Заменить файл", "Удалённый путь (напр. /etc/hosts)", "/etc/")
-        if !ok || strings.TrimSpace(dst) == "" {
-                return
-        }
-        dst = strings.TrimSpace(dst)
-        if !confirmDanger(app.window, "замена файла "+filepath.Base(fn)+" → "+dst+"\n\nХосты: "+strings.Join(ips, ", "), len(ips)) {
-                return
-        }
-        if !massGuard(ips, "Замена файла "+filepath.Base(fn)+" → "+dst, map[bool]int{true: 1, false: 0}[store.State.UseRoot]) {
-                return
-        }
-        logf("warn", "🔄 Замена файла %s → %s на %d хост(ах) — подтверждено", filepath.Base(fn), dst, len(ips))
-        go runQuickReplace(ips, fn, dst)
 }
 
 // restoreSession восстанавливает выбранную группу и выделение хостов.

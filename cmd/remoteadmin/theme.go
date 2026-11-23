@@ -161,34 +161,39 @@ decoration { border-radius: 14px; box-shadow: 0 16px 52px 6px %s; background-col
 `)
 
         // ---- sidebar ----
+        // v1.12.0: кнопки «Управления» слева перерисованы — крупные пилюли
+        // с цветными чипами-иконками, мягкая подсветка при наведении и
+        // акцентная «активная» строка с рамкой
         w(`
 .raside { background-color: %s; padding: 2px 8px 8px 8px; }
 .raside separator { background-color: %s; min-height: 1px; }
-.navsec { color: %s; font-size: 9px; font-weight: 700; padding: 8px 10px 4px 10px; }
-.navbtn { background-image: none; background-color: transparent; color: %s; border: none; border-radius: 11px; padding: 6px 9px; margin: 2px 0; box-shadow: none; transition: all 130ms ease; }
-.navbtn:hover { background-image: none; background-color: %s; color: %s; }
+.navsec { color: %s; font-size: 9px; font-weight: 700; padding: 8px 10px 4px 10px; letter-spacing: 1.6px; }
+.navbtn { background-image: none; background-color: transparent; color: %s; border: 1px solid transparent; border-radius: 12px; padding: 5px 8px; margin: 2px 3px; box-shadow: none; transition: all 140ms ease; }
+.navbtn:hover { background-image: none; background-color: %s; color: %s; border-color: %s; }
 .navbtn:active { background-color: %s; }
-.navbtn label { font-size: 12px; font-weight: 600; color: %s; padding-left: 3px; }
+.navbtn label { font-size: 12px; font-weight: 600; color: %s; padding-left: 4px; }
 .navbtn:hover label { color: %s; }
-.navbtn-active { background-image: linear-gradient(to right, %s, transparent); background-color: %s; border-left: none; }
-.navbtn-active:hover { background-color: %s; }
+.navbtn-active { background-image: linear-gradient(to right, %s, %s); background-color: %s; border-color: %s; }
+.navbtn-active:hover { background-color: %s; border-color: %s; }
 .navbtn-active label { font-weight: 700; color: %s; }
-.navchip { border-radius: 8px; padding: 0; margin: 0; }
+.navchip { border-radius: 9px; padding: 0; margin: 0; min-width: 30px; min-height: 26px; }
 .navchip image { padding: 0; }
-`, side, p.Border, p.Faint, p.Dim, a(p.Accent, 0.10), p.Text, a(p.Accent, 0.18), p.Dim, p.Text,
-                a(p.Accent, 0.14), a(p.Accent, 0.17), a(p.Accent, 0.20), p.Text)
+`, side, p.Border, p.Faint, p.Dim,
+                a(p.Text, 0.06), p.Text, a(p.Text, 0.10), a(p.Text, 0.10), p.Dim, p.Text,
+                a(p.Accent, 0.16), a(p.Accent, 0.05), a(p.Accent, 0.10), a(p.Accent, 0.38),
+                a(p.Accent, 0.20), a(p.Accent, 0.45), p.Text)
 
         // цветные плитки-чипы значков: насыщенный градиент раздела + белый
         // глиф внутри — иконки читаются мгновенно (стиль macOS Settings)
         // NB: без box-shadow — GTK3 CSS его не знает и отбрасывает всё правило
         for i, it := range navItems {
                 c1, c2 := navColorOf(it.id)
-                w(".navchip.c%03d { background-image: linear-gradient(to bottom, %s, %s); background-color: %s; border: 1px solid %s; }",
-                        i, a(c1, 0.80), a(c2, 0.80), a(c1, 0.80), a(c2, 0.35))
-                w(".navbtn:hover .navchip.c%03d { background-image: linear-gradient(to bottom, %s, %s); }",
-                        i, a(c1, 0.92), a(c2, 0.92))
-                w(".navbtn-active .navchip.c%03d { background-image: linear-gradient(to bottom, %s, %s); }",
+                w(".navchip.c%03d { background-image: linear-gradient(135deg, %s, %s); background-color: %s; border: 1px solid %s; }",
+                        i, a(c1, 0.92), a(c2, 0.92), a(c1, 0.92), a(c2, 0.40))
+                w(".navbtn:hover .navchip.c%03d { background-image: linear-gradient(135deg, %s, %s); }",
                         i, a(c1, 1.0), a(c2, 1.0))
+                w(".navbtn-active .navchip.c%03d { background-image: linear-gradient(135deg, %s, %s); border-color: %s; }",
+                        i, a(c1, 1.0), a(c2, 1.0), a(c2, 0.60))
         }
 
         // ---- status bar ----

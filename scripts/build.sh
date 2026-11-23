@@ -1,17 +1,39 @@
 #!/bin/bash
-# RemoteAdmin 1.11.0 build script
-# Builds: linux binary, RPM (РЕД ОС 8), .deb (Astra/Debian), AppImage
+# RemoteAdmin build script
+# Builds: linux binary, RPM (РЕД ОС 8), .deb (Astra/Debian), AppImage, source tarball
+#
+# Portable by default: works on a standard machine with
+#   go, pkg-config, libgtk-3-dev, libvte-2.91-dev, rpm, squashfs-tools, dpkg-deb
+# Sandbox-specific paths (~/rpmroot, ~/gtkroot, ~/env.sh) are used only if present.
+#
+# Env overrides:
+#   OUT       — output dir (default: dist)
+#   BUILDDIR  — rpmbuild/staging dir (default: .build)
+#   GTKLIB    — GTK3 lib dir to bundle into AppImage (auto-detected)
 set -e
-cd "$(dirname "$0")/.."   # repo root
-export VERSION=1.11.0
+cd "$(dirname "$0")/.."
+export VERSION=1.12.0
 export RELEASE=1
-export PATH="$HOME/rpmroot/usr/bin:$PATH"
 export PKGNAME=remoteadmin
-export BUILDDIR=${BUILDDIR:-$HOME/rpmroot}
-export OUT=${OUT:-/home/z/my-project/download}
+export OUT=${OUT:-dist}
+export BUILDDIR=${BUILDDIR:-$PWD/.build}
+mkdir -p "$OUT"
 
 source "$HOME/env.sh" 2>/dev/null || true
 export GOFLAGS=-mod=vendor
+
+# sandbox rpm toolkit takes precedence if it exists
+if [ -d "$HOME/rpmroot/usr/bin" ]; then export PATH="$HOME/rpmroot/usr/bin:$PATH"; fi
+
+# GTK3 runtime lib dir for AppImage bundling
+if [ -z "$GTKLIB" ]; then
+  if [ -d "$HOME/gtkroot/usr/lib/x86_64-linux-gnu" ]; then
+    GTKLIB="$HOME/gtkroot/usr/lib/x86_64-linux-gnu"
+  else
+    GTKLIB="/usr/lib/x86_64-linux-gnu"
+  fi
+fi
+export GTKLIB
 
 echo "== 1. Icon =="
 go run scripts/genicon.go icon.png 2>/dev/null || go run scripts/genicon.go /tmp/icon.png
@@ -26,10 +48,17 @@ mkdir -p "$BUILDDIR"/{BUILD,BUILDROOT,RPMS,SOURCES,SPECS,SRPMS}
 TARBALL="$PKGNAME-$VERSION.tar.gz"
 tar --exclude='remoteadmin/.git' --exclude='remoteadmin/remoteadmin' --exclude='remoteadmin/icon.png' --transform "s|^remoteadmin[^/]*|remoteadmin-${VERSION}|" \
   -czf "$BUILDDIR/SOURCES/$TARBALL" -C .. "$(basename $PWD)"
-LD_LIBRARY_PATH="$HOME/rpmroot/usr/lib/x86_64-linux-gnu:$HOME/gtkroot/usr/lib/x86_64-linux-gnu" RPM_CONFIGDIR="$HOME/rpmroot/usr/lib/rpm" "$HOME/rpmroot/usr/bin/rpmbuild" -ba --define "_topdir $BUILDDIR" \
-  --define "_dbpath $BUILDDIR/rpmdb" --define "_rpmconfigdir $HOME/rpmroot/usr/lib/rpm" \
-  --define "pkgname $PKGNAME" --define "version $VERSION" --define "release $RELEASE" \
-  packaging/rpm/remoteadmin.spec 2>&1 | tail -3
+RPMB=rpmbuild
+RPMOPTS=""
+if [ -d "$HOME/rpmroot/usr/lib/rpm" ]; then
+  RPMOPTS="--define _rpmconfigdir $HOME/rpmroot/usr/lib/rpm"
+  RPLD="LD_LIBRARY_PATH=$HOME/rpmroot/usr/lib/x86_64-linux-gnu:$HOME/gtkroot/usr/lib/x86_64-linux-gnu"
+else
+  RPLD=""
+fi
+eval "$RPLD $RPMB -ba --define \"_topdir $BUILDDIR\" --define \"_dbpath $BUILDDIR/rpmdb\" $RPMOPTS \
+  --define \"pkgname $PKGNAME\" --define \"version $VERSION\" --define \"release $RELEASE\" \
+  packaging/rpm/remoteadmin.spec" 2>&1 | tail -3
 RPM=$(ls "$BUILDDIR"/RPMS/x86_64/${PKGNAME}-${VERSION}-*.x86_64.rpm | head -1)
 cp "$RPM" "$OUT/"
 echo "RPM: $RPM"
@@ -121,7 +150,7 @@ EOF
 chmod 755 "$APPDIR/AppRun"
 # bundle libs
 mkdir -p "$APPDIR/usr/lib"
-RPATH=$HOME/gtkroot/usr/lib/x86_64-linux-gnu
+RPATH="$GTKLIB"
 for lib in libgtk-3.so.0 libgdk-3.so.0 libgdk_pixbuf-2.0.so.0 libgio-2.0.so.0 \
            libgobject-2.0.so.0 libglib-2.0.so.0 libgmodule-2.0.so.0 \
            libpango-1.0.so.0 libpangocairo-1.0.so.0 libpangoft2-1.0.so.0 \
@@ -147,14 +176,19 @@ cp -r "$RPATH/gtk-3.0" "$APPDIR/usr/lib/" 2>/dev/null || true
 cp -r "$RPATH/gio" "$APPDIR/usr/lib/" 2>/dev/null || true
 mkdir -p "$APPDIR/usr/lib/gdk-pixbuf-2.0/2.10.0"
 cp -r "$RPATH/gdk-pixbuf-2.0/2.10.0/loaders" "$APPDIR/usr/lib/gdk-pixbuf-2.0/2.10.0/" 2>/dev/null || true
-LD_LIBRARY_PATH="$APPDIR/usr/lib" "$RPATH/gdk-pixbuf-2.0/gdk-pixbuf-query-loaders" "$APPDIR"/usr/lib/gdk-pixbuf-2.0/2.10.0/loaders/*.so 2>/dev/null | sed "s|$APPDIR/usr/lib/gdk-pixbuf-2.0/2.10.0/loaders/||g" > "$APPDIR/usr/lib/gdk-pixbuf-2.0/2.10.0/loaders.cache" || true
+PQB=$(command -v gdk-pixbuf-query-loaders || echo "$HOME/gtkroot/usr/bin/gdk-pixbuf-query-loaders")
+LD_LIBRARY_PATH="$APPDIR/usr/lib" "$PQB" "$APPDIR"/usr/lib/gdk-pixbuf-2.0/2.10.0/loaders/*.so 2>/dev/null | sed "s|$APPDIR/usr/lib/gdk-pixbuf-2.0/2.10.0/loaders/||g" > "$APPDIR/usr/lib/gdk-pixbuf-2.0/2.10.0/loaders.cache" || true
 # glib schemas + icons minimal
 mkdir -p "$APPDIR/usr/share/glib-2.0/schemas"
-cp -f "$HOME/gtkroot/usr/share/glib-2.0/schemas/"*.xml "$APPDIR/usr/share/glib-2.0/schemas/" 2>/dev/null || true
-( cd "$APPDIR/usr/share/glib-2.0/schemas" && "$HOME/gtkroot/usr/bin/glib-compile-schemas" . 2>/dev/null ) || \
-  glib-compile-schemas "$APPDIR/usr/share/glib-2.0/schemas" 2>/dev/null || true
+GLIBSHARE="/usr/share/glib-2.0/schemas"
+[ -d "$HOME/gtkroot/usr/share/glib-2.0/schemas" ] && GLIBSHARE="$HOME/gtkroot/usr/share/glib-2.0/schemas"
+cp -f "$GLIBSHARE/"*.xml "$APPDIR/usr/share/glib-2.0/schemas/" 2>/dev/null || true
+GCS=$(command -v glib-compile-schemas || echo "$HOME/gtkroot/usr/bin/glib-compile-schemas")
+( cd "$APPDIR/usr/share/glib-2.0/schemas" && "$GCS" . 2>/dev/null ) || true
 mkdir -p "$APPDIR/usr/share/icons/hicolor/16x16/status" "$APPDIR/usr/share/icons/Adwaita/16x16/status"
-[ -d "$HOME/gtkroot/usr/share/icons" ] && cp -rn "$HOME/gtkroot/usr/share/icons/"* "$APPDIR/usr/share/icons/" 2>/dev/null || true
+ICONSHARE="/usr/share/icons"
+[ -d "$HOME/gtkroot/usr/share/icons" ] && ICONSHARE="$HOME/gtkroot/usr/share/icons"
+[ -d "$ICONSHARE" ] && cp -rn "$ICONSHARE/"* "$APPDIR/usr/share/icons/" 2>/dev/null || true
 # runtime for AppImage
 RUNTIME="$BUILDDIR/appimage/runtime"
 if [ ! -f "$RUNTIME" ]; then
@@ -162,7 +196,6 @@ if [ ! -f "$RUNTIME" ]; then
 fi
 SQFS="$BUILDDIR/appimage/remoteadmin.squashfs"
 MK=mksquashfs
-command -v $MK >/dev/null 2>&1 || MK="$HOME/rpmroot/usr/bin/mksquashfs"
 command -v $MK >/dev/null 2>&1 || MK=""
 if [ -n "$MK" ] && [ -f "$RUNTIME" ]; then
   "$MK" "$APPDIR" "$SQFS" -comp xz -root-owned -noappend -quiet 2>&1 | tail -1
@@ -174,7 +207,7 @@ else
 fi
 
 echo "== 6. Source tarball =="
-tar --exclude='remoteadmin/.git' --exclude='remoteadmin/remoteadmin' --exclude='remoteadmin/icon.png' --transform "s|^remoteadmin[^/]*|remoteadmin-${VERSION}|" -czf "$OUT/${PKGNAME}-${VERSION}-source.tar.gz" -C .. "$(basename $PWD)"
+tar --exclude='remoteadmin/.git' --exclude='remoteadmin/remoteadmin' --exclude='remoteadmin/icon.png' --exclude='remoteadmin/dist' --exclude='remoteadmin/.build' --transform "s|^remoteadmin[^/]*|remoteadmin-${VERSION}|" -czf "$OUT/${PKGNAME}-${VERSION}-source.tar.gz" -C .. "$(basename $PWD)"
 echo "SRC: $OUT/${PKGNAME}-${VERSION}-source.tar.gz"
 
 echo "== DONE =="

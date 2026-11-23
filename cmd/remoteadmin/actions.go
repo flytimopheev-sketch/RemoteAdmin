@@ -251,6 +251,43 @@ func runQuickCommand(ips []string, cmd string) {
         })
 }
 
+// runDiskAction — заполненность файловых систем (df -h) на выбранных хостах
+// (v1.12.0, новая кнопка панели «Действия»).
+func runDiskAction(ips []string) {
+        if !needCreds() {
+                return
+        }
+        logf("info", "💾 Диски (df -h): %d хост(ов)…", len(ips))
+        go runParallel(ips, "Диски", func(ip string) (string, error) {
+                out, err := execOnHost(ip, "df -h -x tmpfs -x devtmpfs | sed 1d", false)
+                if err == nil && strings.TrimSpace(out) == "" {
+                        return "нет смонтированных файловых систем", nil
+                }
+                return out, err
+        })
+}
+
+// runUpdatesAction — проверка доступных обновлений пакетов (dnf check-update,
+// на системах без dnf — yum) БЕЗ установки (v1.12.0, новая кнопка «Действий»).
+func runUpdatesAction(ips []string) {
+        if !needCreds() {
+                return
+        }
+        logf("info", "🔄 Проверка обновлений: %d хост(ов)…", len(ips))
+        go runParallel(ips, "Обновления", func(ip string) (string, error) {
+                out, err := execOnHost(ip,
+                        "if command -v dnf >/dev/null 2>&1; then dnf -q check-update 2>&1; c=$?; "+
+                                "elif command -v yum >/dev/null 2>&1; then yum -q check-update 2>&1; c=$?; "+
+                                "else echo 'dnf/yum не найдены'; exit 0; fi; "+
+                                "if [ \"$c\" = \"100\" ]; then echo '⬆ Доступны обновления (список выше)'; "+
+                                "elif [ \"$c\" = \"0\" ]; then echo '✓ Система актуальна'; fi", true)
+                if err != nil {
+                        return out, err
+                }
+                return strings.TrimSpace(out), nil
+        })
+}
+
 func runQuickScript(ips []string, localPath string) {
         if len(ips) == 0 {
                 glibIdle(func() { warnDialog(app.window, "Не выбрано ни одного хоста") })
@@ -281,42 +318,6 @@ func runQuickScript(ips []string, localPath string) {
         })
 }
 
-func runQuickReplace(ips []string, localPath, remotePath string) {
-        if len(ips) == 0 {
-                glibIdle(func() { warnDialog(app.window, "Не выбрано ни одного хоста") })
-                return
-        }
-        // NB: подтверждение выполняет replaceRunDialog (файл + путь + список
-        // хостов) — здесь повторный вопрос больше не задаётся.
-        logf("warn", "🔄 Замена файла %s → %s на %d хост(ах)…", filepath.Base(localPath), remotePath, len(ips))
-        go runParallel(ips, "Замена файла", func(ip string) (string, error) {
-                creds := buildCreds(ip)
-                cl, err := Connect(creds)
-                if err != nil {
-                        return "", err
-                }
-                defer cl.Close()
-                needRoot := store.State.UseRoot && creds.User != "root"
-                if needRoot && creds.RootPass == "" {
-                        return "", fmt.Errorf("нужен пароль root")
-                }
-                if !needRoot {
-                        if err := scpUpload(cl, localPath, remotePath); err != nil {
-                                return "", err
-                        }
-                        return "файл заменён: " + remotePath, nil
-                }
-                // backup + replace as root
-                bak := fmt.Sprintf("%s.ra_bak_%d", remotePath, time.Now().Unix())
-                if _, err := ExecRoot(cl, fmt.Sprintf("cp -f %s %s 2>/dev/null; true", shellQuote(remotePath), shellQuote(bak)), creds.RootPass, 30); err != nil {
-                        return "", err
-                }
-                if err := uploadThenSuRoot(cl, localPath, remotePath, creds.RootPass, store.State.Settings.ExecTimeout); err != nil {
-                        return "", err
-                }
-                return fmt.Sprintf("файл заменён (backup: %s)", bak), nil
-        })
-}
 
 func scpUpload(cl *ssh.Client, localPath, remotePath string) error {
         return uploadThenSuRoot(cl, localPath, remotePath, "", 300)
