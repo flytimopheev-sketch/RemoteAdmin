@@ -28,7 +28,8 @@ type TemplatesUI struct {
 const (
         TCOL_NAME  = 0
         TCOL_DESC  = 1 // reserved; detail pane renders markup instead
-        TCOL_COUNT = 2 // NB: NOT a valid column of the 2-col tree — see refresh()
+        TCOL_RAW   = 2 // скрытая колонка с ЧИСТЫМ именем (v1.13.2)
+        // NB: NOT a valid column of the 2-col tree — see refresh()
 )
 
 // seedPresetTemplates fills an empty template library with useful presets
@@ -143,11 +144,60 @@ func newTemplatesUI() *TemplatesUI {
         introBox.PackStart(intro, false, false, 0)
         root.PackStart(introCard, false, false, 0)
 
+        // v1.13.2: все кнопки вкладки — ОДИН компактный ряд сверху (.tbtn),
+        // как на «Цепочках» и «Планировщике». Раньше два ряда сидели в нижней
+        // части карточки — при прокручиваемой странице они оказывались под
+        // сгибом и были не видны. Ряд всегда виден, кнопки одинаковые.
+        toolbar := boxNew(gtk.ORIENTATION_HORIZONTAL, 6)
+        btnRun := buttonNew("Запустить")
+        sr, _ := btnRun.GetStyleContext()
+        sr.AddClass("suggested")
+        addClass(btnRun, "tbtn")
+        btnRun.SetTooltipText("Выполнить задачи выбранного шаблона на выбранных хостах")
+        btnRun.Connect("clicked", func() { u.runSelected() })
+        btnLoad := buttonNew("В Плейбук")
+        addClass(btnLoad, "tbtn")
+        btnLoad.SetTooltipText("Загрузить задачи выбранного шаблона в редактор Плейбук для доработки")
+        btnLoad.Connect("clicked", func() { u.loadToPlaybook() })
+        btnDel := buttonNew("Удалить")
+        addClass(btnDel, "tbtn")
+        btnDel.SetTooltipText("Удалить выбранный шаблон (Delete в списке — то же)")
+        btnDel.Connect("clicked", func() { u.deleteSelected() })
+        btnNew := buttonNew("Новый")
+        addClass(btnNew, "tbtn")
+        btnNew.SetTooltipText("Создать пустой шаблон с одной командой")
+        btnNew.Connect("clicked", func() { u.createNew() })
+        btnFromPb := buttonNew("Из Плейбука")
+        addClass(btnFromPb, "tbtn")
+        btnFromPb.SetTooltipText("Создать шаблон из текущего списка задач Плейбука (сохранить как шаблон)")
+        btnFromPb.Connect("clicked", func() {
+                if app.pbUI != nil {
+                        app.pbUI.saveAsTemplate()
+                        u.refresh()
+                }
+        })
+        btnEdit := buttonNew("Редактировать")
+        addClass(btnEdit, "tbtn")
+        btnEdit.SetTooltipText("Изменить имя, описание и задачи выбранного шаблона\n(двойной щелчок по шаблону в списке — то же самое)")
+        btnEdit.Connect("clicked", func() { u.editSelected() })
+        toolbar.PackStart(btnRun, false, false, 0)
+        toolbar.PackStart(btnLoad, false, false, 0)
+        toolbar.PackStart(btnDel, false, false, 0)
+        toolbar.PackStart(btnNew, false, false, 0)
+        toolbar.PackStart(btnFromPb, false, false, 0)
+        toolbar.PackStart(btnEdit, false, false, 0)
+        root.PackStart(toolbar, false, false, 0)
+
         lists := boxNew(gtk.ORIENTATION_HORIZONTAL, 8)
 
         // ---- left: template list + buttons ----
         leftCard, leftBox := cardBox("Шаблоны задач")
-        u.tree, u.st = makeTree([]string{"Имя", "Задач"}, []glib.Type{glib.TYPE_STRING, glib.TYPE_STRING})
+        // v1.13.0 (жалоба: «цвет текста одинаковый, монотонный, не читаемый»):
+        // имя шаблона — жирным, вторая строка — приглушённая сводка
+        // (число задач, типы, root) — список перестал быть одноцветным.
+        // v1.13.2: у ListStore ТРИ колонки (третья — скрытая TCOL_RAW с чистым
+        // именем); в TreeView отображаются только первые две.
+        u.tree, u.st = makeTreeM([]string{"Шаблон", "Задач"}, []glib.Type{glib.TYPE_STRING, glib.TYPE_STRING, glib.TYPE_STRING}, map[int]bool{0: true})
         sel, _ := u.tree.GetSelection()
         sel.SetMode(gtk.SELECTION_SINGLE)
         sel.Connect("changed", func() { u.showDetail() })
@@ -162,46 +212,6 @@ func newTemplatesUI() *TemplatesUI {
         sc := scrolled(u.tree, 0)
         sc.SetVExpand(true)
         leftBox.PackStart(sc, true, true, 0)
-
-        btns := boxNew(gtk.ORIENTATION_HORIZONTAL, 3)
-        btnRun := buttonNew("Запустить")
-        sr, _ := btnRun.GetStyleContext()
-        sr.AddClass("suggested")
-        btnRun.SetTooltipText("Выполнить задачи шаблона на выбранных хостах")
-        btnRun.Connect("clicked", func() { u.runSelected() })
-        btnLoad := buttonNew("В Плейбук")
-        btnLoad.SetTooltipText("Загрузить задачи шаблона в редактор Плейбук для доработки")
-        btnLoad.Connect("clicked", func() { u.loadToPlaybook() })
-        btnDel := buttonNew("🗑")
-        btnDel.SetTooltipText("Удалить выбранный шаблон")
-        btnDel.Connect("clicked", func() { u.deleteSelected() })
-        btns.PackStart(btnRun, true, true, 0)
-        btns.PackStart(btnLoad, true, true, 0)
-        btns.PackStart(btnDel, false, false, 0)
-        leftBox.PackStart(btns, false, false, 0)
-
-        createRow := boxNew(gtk.ORIENTATION_HORIZONTAL, 3)
-        btnNew := buttonNew("Новый шаблон")
-        btnNew.SetTooltipText("Создать пустой шаблон с одной командой")
-        btnNew.Connect("clicked", func() { u.createNew() })
-        btnFromPb := buttonNew("Создать из Плейбука")
-        btnFromPb.SetTooltipText("Сохранить текущий список задач Плейбука как шаблон")
-        btnFromPb.Connect("clicked", func() {
-                if app.pbUI != nil {
-                        app.pbUI.saveAsTemplate()
-                        u.refresh()
-                }
-        })
-        createRow.PackStart(btnNew, true, true, 0)
-        createRow.PackStart(btnFromPb, true, true, 0)
-        leftBox.PackStart(createRow, false, false, 0)
-
-        editRow := boxNew(gtk.ORIENTATION_HORIZONTAL, 3)
-        btnEdit := buttonNew("Редактировать шаблон")
-        btnEdit.SetTooltipText("Изменить имя, описание и задачи выбранного шаблона\n(двойной щелчок по шаблону в списке — то же самое)")
-        btnEdit.Connect("clicked", func() { u.editSelected() })
-        editRow.PackStart(btnEdit, true, true, 0)
-        leftBox.PackStart(editRow, false, false, 0)
 
         // двойной щелчок — редактирование
         u.tree.Connect("button-press-event", func(_ *gtk.TreeView, ev *gdk.Event) bool {
@@ -233,10 +243,18 @@ func newTemplatesUI() *TemplatesUI {
         addClass(u.detail, "rpdetail")
         if db, err := u.detail.GetBuffer(); err == nil {
                 dc := detailColors()
-                db.CreateTag("h1", map[string]interface{}{"weight": 700, "scale": 1.15, "foreground": dc.text})
+                // v1.13.0: состав раскрашен — заголовок акцентный, тип задачи
+                // своим цветом (команда — синий, скрипт — янтарный, копия —
+                // зелёный, правка — красный), строка шага полужирная.
+                db.CreateTag("h1", map[string]interface{}{"weight": 700, "scale": 1.18, "foreground": dc.sec})
+                db.CreateTag("step", map[string]interface{}{"weight": 600, "foreground": dc.text})
                 db.CreateTag("dim", map[string]interface{}{"foreground": dc.dim})
                 db.CreateTag("num", map[string]interface{}{"weight": 700, "foreground": dc.sec})
                 db.CreateTag("root", map[string]interface{}{"foreground": dc.warn})
+                db.CreateTag("tcommand", map[string]interface{}{"weight": 600, "foreground": dc.cmd})
+                db.CreateTag("tscript", map[string]interface{}{"weight": 600, "foreground": dc.warn})
+                db.CreateTag("tcopy", map[string]interface{}{"weight": 600, "foreground": dc.ok})
+                db.CreateTag("tedit", map[string]interface{}{"weight": 600, "foreground": dc.fail})
                 db.CreateTag("mono", map[string]interface{}{"family": "Monospace", "foreground": dc.text})
         }
         dsc := scrolled(u.detail, 0)
@@ -262,12 +280,46 @@ func (u *TemplatesUI) refresh() {
                 return
         }
         u.st.Clear()
+        dc := detailColors()
         for _, t := range store.State.Templates {
                 iter := u.st.Append()
-                // NB: the tree has exactly 2 columns (Имя, Задач); the old constant
-                // TCOL_COUNT=2 pointed past the model and GTK silently dropped the
-                // value (Gtk-CRITICAL), leaving the count column empty.
-                _ = u.st.Set(iter, []int{TCOL_NAME, 1}, []interface{}{t.Name, fmt.Sprintf("%d", len(t.Tasks))})
+                // NB: the tree has exactly 2 columns (Шаблон, Задач); col 0 is
+                // Pango-markup: жирное имя + приглушённая сводка снизу.
+                kinds := map[string]int{}
+                hasRoot := false
+                for _, tk := range t.Tasks {
+                        kinds[tk.Type]++
+                        if tk.Root {
+                                hasRoot = true
+                        }
+                }
+                order := []string{"command", "script", "copy", "replace", "replace_with_cmds", "edit"}
+                ru := map[string]string{"command": "команды", "script": "скрипты", "copy": "копирование",
+                        "replace": "замена", "replace_with_cmds": "замена+команды", "edit": "правка"}
+                var kindsTxt []string
+                for _, k := range order {
+                        if n := kinds[k]; n > 0 {
+                                kindsTxt = append(kindsTxt, fmt.Sprintf("%d %s", n, ru[k]))
+                        }
+                }
+                sum := fmt.Sprintf("%d задач", len(t.Tasks))
+                if len(t.Tasks) == 1 {
+                        sum = "1 задача"
+                }
+                if len(kindsTxt) > 0 {
+                        sum += " · " + strings.Join(kindsTxt, ", ")
+                }
+                if hasRoot {
+                        sum += " · root"
+                }
+                markup := fmt.Sprintf("<b>%s</b>\n<span foreground=\"%s\" size=\"9000\">%s</span>",
+                        escapeMarkup(t.Name), dc.dim, escapeMarkup(sum))
+                // v1.13.2: в колонке 0 живёт МАРКАП (жирное имя + сводка) —
+                // поиск по ней никогда не находил шаблон (TemplateByName(маркап)
+                // = nil: не работали «Запустить/Изменить/Удалить» и состав).
+                // Чистое имя — в скрытой колонке TCOL_RAW.
+                _ = u.st.Set(iter, []int{TCOL_NAME, 1, TCOL_RAW},
+                        []interface{}{markup, fmt.Sprintf("%d", len(t.Tasks)), t.Name})
         }
 }
 
@@ -276,7 +328,8 @@ func (u *TemplatesUI) selected() *Template {
         if !ok {
                 return nil
         }
-        name := iterGetString(m, iter, TCOL_NAME)
+        // v1.13.2: имя берём из скрытой колонки TCOL_RAW — в колонке 0 маркап
+        name := iterGetString(m, iter, TCOL_RAW)
         return store.TemplateByName(name)
 }
 
@@ -310,7 +363,9 @@ func (u *TemplatesUI) showDetail() {
         }
         for i, task := range t.Tasks {
                 ins(fmt.Sprintf("%d. ", i+1), "num")
-                ins(task.StepTitle()+"\n", "")
+                ins(taskTypeLabel(task.Type), taskTypeTag(task.Type))
+                ins(" ", "")
+                ins(task.StepTitle()+"\n", "step")
                 if cmd := task.stepCommand(); strings.TrimSpace(cmd) != "" {
                         ins("   "+strings.ReplaceAll(cmd, "\n", "\n   ")+"\n", "mono")
                 }
@@ -400,7 +455,7 @@ func (u *TemplatesUI) selectByName(name string) {
         }
         iter, ok2 := m.GetIterFirst()
         for ok2 {
-                if iterGetString(m, iter, TCOL_NAME) == name {
+                if iterGetString(m, iter, TCOL_RAW) == name {
                         sel.SelectIter(iter)
                         return
                 }
@@ -726,3 +781,36 @@ func templateTaskDialog(parent *gtk.Dialog, src PlaybookTask) (PlaybookTask, boo
 }
 
 var _ = glib.TimeoutAdd
+
+// taskTypeLabel/taskTypeTag — цветная маркировка типа задачи (v1.13.0).
+func taskTypeLabel(t string) string {
+        switch t {
+        case "command":
+                return "команда"
+        case "script":
+                return "скрипт"
+        case "copy":
+                return "копия"
+        case "replace":
+                return "замена"
+        case "replace_with_cmds":
+                return "замена+команды"
+        case "edit":
+                return "правка"
+        }
+        return t
+}
+
+func taskTypeTag(t string) string {
+        switch t {
+        case "command":
+                return "tcommand"
+        case "script":
+                return "tscript"
+        case "copy":
+                return "tcopy"
+        case "edit":
+                return "tedit"
+        }
+        return "dim"
+}

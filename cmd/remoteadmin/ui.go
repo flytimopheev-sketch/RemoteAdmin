@@ -386,9 +386,10 @@ func edgeStrip(side string) *gtk.EventBox {
 var panedRegistry []panedRef
 
 type panedRef struct {
-        name string
-        p    *gtk.Paned
-        def  int
+        name  string
+        p     *gtk.Paned
+        def   int
+        horiz bool // ориентация: true — горизонтальный (разделитель вертикален)
 }
 
 // makeHPaned — горизонтальный разделитель с сохранением положения.
@@ -408,9 +409,22 @@ func makePaned(orient gtk.Orientation, name string, c1, c2 gtk.IWidget, defPos i
                 return nil
         }
         addClass(p, "rapaned")
-        p.Pack1(c1, true, false)
-        p.Pack2(c2, true, false)
-        panedRegistry = append(panedRegistry, panedRef{name: name, p: p, def: defPos})
+        // v1.13.0/v1.13.2: предсказуемые разделители.
+        //  • ОБЕ стороны защищены (shrink=false): минимальные размеры детей
+        //    уважаются GTK, граница упирается в минимум, контент НИКОГДА
+        //    не срезается краем окна (жалобы v1.13.0: «Действия обрезана»,
+        //    «список хостов сжат») — при тесном окне появляется
+        //    горизонтальная прокрутка страницы вместо обрезки;
+        //  • вертикальные: вкладка сверху ≥160 px, нижняя панель
+        //    «Выполнение/Вывод/События» ≥100 px — её нельзя сдавить в ноль.
+        if orient == gtk.ORIENTATION_HORIZONTAL {
+                p.Pack1(c1, false, false)
+                p.Pack2(c2, true, false)
+        } else {
+                p.Pack1(c1, true, false)
+                p.Pack2(c2, false, false)
+        }
+        panedRegistry = append(panedRegistry, panedRef{name: name, p: p, def: defPos, horiz: orient == gtk.ORIENTATION_HORIZONTAL})
         return p
 }
 
@@ -430,6 +444,40 @@ func restorePanedPositions() {
                                                 pos = wh - 260
                                         } else {
                                                 pos = wh * 2 / 3
+                                        }
+                                }
+                        }
+                        // v1.13.2: кламп к текущей аллокации и минимумам детей.
+                        // Дефолтные (и сохранённые от БОЛЕЕ ШИРОКОГО окна) позиции
+                        // больше не срезают правую/нижнюю панель: GTK3 сам НЕ урезает
+                        // SetPosition — позиция «граница 560» при ширине 970 оставляла
+                        // карточке «Действия» 160 px вместо 294 и СРЕЗАЛА её.
+                        alloc := r.p.ToWidget().GetAllocatedWidth()
+                        if !r.horiz {
+                                alloc = r.p.ToWidget().GetAllocatedHeight()
+                        }
+                        if alloc > 10 {
+                                c1, e1 := r.p.GetChild1()
+                                c2, e2 := r.p.GetChild2()
+                                if e1 == nil && e2 == nil && c1 != nil && c2 != nil {
+                                        lo, _ := c1.ToWidget().GetPreferredWidth()
+                                        hi, _ := c2.ToWidget().GetPreferredWidth()
+                                        if !r.horiz {
+                                                lo, _ = c1.ToWidget().GetPreferredHeight()
+                                                hi, _ = c2.ToWidget().GetPreferredHeight()
+                                        }
+                                        maxPos := alloc - hi - 9 // 9 — ширина ручки
+                                        if maxPos < lo {
+                                                maxPos = lo
+                                        }
+                                        if pos > maxPos {
+                                                pos = maxPos
+                                        }
+                                        if pos < lo {
+                                                pos = lo
+                                        }
+                                        if os.Getenv("RA_DEBUG_UI") == "1" {
+                                                fmt.Printf("PANEDCLAMP %s alloc=%d lo=%d hi=%d -> %d\n", r.name, alloc, lo, hi, pos)
                                         }
                                 }
                         }
@@ -905,6 +953,9 @@ func buildApp(selftest bool) error {
                 }
         }
         applyTheme(win)
+        if os.Getenv("RA_DEBUG_UI") == "1" {
+                dbgInstallLog()
+        }
 
         win.Connect("draw", func(_ *gtk.Window, ctx *cairo.Context) bool {
                 p := currentPalette()
@@ -960,6 +1011,14 @@ func buildApp(selftest bool) error {
         main.PackStart(buildSidebar(), false, false, 0)
 
         app.pages, _ = gtk.StackNew()
+        // v1.13.2: GtkStack по умолчанию homogeneous — КАЖДАЯ страница
+        // растягивается до размеров самой крупной (Плейбук требовал
+        // 1136×700), и все прочие вкладки рендерились шире/выше вьюпорта:
+        // правые карточки («Действия», «Вкл/Выкл») срезались краем окна,
+        // нижняя часть страниц уходила под сгиб. Отключение даёт каждой
+        // странице её собственный размер: узкие вкладки не «распирает»,
+        // широкая (Плейбук) — честно прокручивается.
+        app.pages.SetHomogeneous(false)
         app.pages.SetTransitionType(gtk.STACK_TRANSITION_TYPE_CROSSFADE)
         app.pages.SetTransitionDuration(160)
         app.pages.SetMarginStart(10)
@@ -969,11 +1028,17 @@ func buildApp(selftest bool) error {
 
         // Нижняя панель «Выполнение / Вывод / События» — вертикальная
         // раздвижная область: её высоту можно потянуть мышью, положение
-        // запоминается. Минимумы снижены (v1.12.0): разделитель теперь можно
-        // тянуть СУЩЕСТВЕННО ниже — панель может занять до ~2/3 окна
-        // (жалоба v1.11.0: «нельзя потянуть чуть ниже»).
+        // запоминается. v1.13.0 (жалоба: «не перемещается вниз»): панель
+        // обёрнута в прокрутку с минимальной высотой 100 px — раньше
+        // минимум задавал контент вкладки (~260 px), и разделитель
+        // упирался, не давая опустить панель. Теперь панель можно
+        // сжать почти до заголовка вкладок (контент прокручивается),
+        // а также вытянуть почти на всё окно.
         execW := buildExecBar()
-        execW.ToWidget().SetSizeRequest(-1, 150)
+        esc, _ := gtk.ScrolledWindowNew(nil, nil)
+        esc.SetPolicy(gtk.POLICY_NEVER, gtk.POLICY_AUTOMATIC)
+        esc.SetMinContentHeight(100)
+        esc.Add(execW)
         // Страницы оборачиваются в прокрутку: иначе минимальный размер
         // контента раздувает окно выше экрана (на Windows-ноутбуках
         // 1366x768 нижняя панель «Выполнение/Вывод/События» целиком
@@ -985,7 +1050,7 @@ func buildApp(selftest bool) error {
         psc.SetMinContentWidth(920)
         psc.SetMinContentHeight(160)
         psc.Add(app.pages)
-        app.execSplit = makeVPaned("execbar", psc, execW, 460)
+        app.execSplit = makeVPaned("execbar", psc, esc, 460)
         main.PackStart(app.execSplit, true, true, 0)
         content.PackStart(buildStatusBar(), false, false, 0)
 
@@ -1064,6 +1129,31 @@ func (a *application) refreshAfterUnlock() {
 
 // ---------- screenshots (self-documenting UI verification) ----------
 
+// selectFirstRow выделяет первую запись списка — для скриншотов,
+// чтобы снимок показывал раскрашенный состав шаблона/цепочки.
+func selectFirstRow(tv *gtk.TreeView) {
+        if tv == nil {
+                return
+        }
+        sel, err := tv.GetSelection()
+        if err != nil || sel == nil {
+                return
+        }
+        m, err := tv.GetModel()
+        if err != nil || m == nil {
+                return
+        }
+        ls, ok := m.(*gtk.ListStore)
+        if !ok {
+                return
+        }
+        iter, ok := ls.GetIterFirst()
+        if !ok || iter == nil {
+                return
+        }
+        sel.SelectIter(iter)
+}
+
 // captureSeq switches pages one by one and saves window PNGs into dir.
 func (a *application) captureSeq(dir string, i int) {
         if i >= len(navItems) {
@@ -1072,6 +1162,21 @@ func (a *application) captureSeq(dir string, i int) {
         }
         it := navItems[i]
         a.activateNav(it.id)
+        // выбор первой записи — снимок показывает раскрашенный состав
+        switch it.id {
+        case "templates":
+                if a.tplUI != nil {
+                        selectFirstRow(a.tplUI.tree)
+                }
+        case "chains":
+                if a.chainUI != nil {
+                        selectFirstRow(a.chainUI.tree)
+                }
+        }
+        if os.Getenv("RA_DEBUG_UI") == "1" {
+                fmt.Printf("DBG=== page %s ===\n", it.id)
+                dbgDumpC(a.window)
+        }
         glibTimeout(420, func() bool {
                 w, h := a.window.GetAllocatedWidth(), a.window.GetAllocatedHeight()
                 if gwin, err := a.window.GetWindow(); err == nil && gwin != nil {

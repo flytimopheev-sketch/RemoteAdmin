@@ -147,6 +147,8 @@ func newPlaybookUI() *PlaybookUI {
 
         u.tgtLbl = labelNew("Цель: —")
         u.tgtLbl.SetXAlign(0)
+        u.tgtLbl.SetLineWrap(true)
+        u.tgtLbl.SetMaxWidthChars(60)
         addClass(u.tgtLbl, "ratitle")
         metaBox.PackStart(u.tgtLbl, false, false, 2)
 
@@ -179,6 +181,9 @@ func newPlaybookUI() *PlaybookUI {
         u.emptyLbl = labelNew("Список задач пуст.\nВыберите тип задачи справа и нажмите «Добавить задачу».\nИли начните с шаблона на вкладке «Шаблоны».")
         addClass(u.emptyLbl, "raempty")
         u.emptyLbl.SetJustify(gtk.JUSTIFY_CENTER)
+        // v1.13.2: без переноса метка запрашивала минимальную ширину всей
+        // самой длинной строки (~433 px) и раздувала панель редактора.
+        u.emptyLbl.SetLineWrap(true)
         leftBox.PackStart(u.emptyLbl, false, false, 8)
 
         // ---- drag-and-drop: перетаскивание задач мышью ----
@@ -233,7 +238,7 @@ func newPlaybookUI() *PlaybookUI {
         u.runBtn.Connect("clicked", func() { u.runPlaybook() })
 
         // «Проверить перед запуском»: параметры, доступность хостов, права
-        btnPreflight := buttonNew("Проверить перед запуском")
+        btnPreflight := buttonNew("Проверить")
         btnPreflight.SetTooltipText("Проверить заполненность параметров, доступность хостов и наличие прав.\n\nПроверка не гарантирует безопасность произвольных команд — просмотрите команды перед запуском.")
         btnPreflight.Connect("clicked", func() { u.preflight() })
 
@@ -262,6 +267,8 @@ func newPlaybookUI() *PlaybookUI {
         metaBox.PackStart(u.runHint, false, false, 0)
 
         // настройки выполнения всего запуска (v1.9.0)
+        // v1.13.1: настройки запуска — в ОДНОМ ряду слева (числа), кнопки
+        // в другом; раньше ряд вмещал всё и требовал ~1300 px.
         setRow := boxNew(gtk.ORIENTATION_HORIZONTAL, 4)
         setRow.PackStart(labelNew("Параллельно хостов:"), false, false, 0)
         u.parS, _ = gtk.SpinButtonNewWithRange(1, 64, 1)
@@ -287,6 +294,8 @@ func newPlaybookUI() *PlaybookUI {
         }
         u.errPolC.SetTooltipText("Политика ошибки: остановиться / продолжить / спросить у пользователя")
         setRow.PackStart(u.errPolC, false, false, 0)
+        metaBox.PackStart(setRow, false, false, 2)
+        setRow2 := boxNew(gtk.ORIENTATION_HORIZONTAL, 4)
         btnVars := buttonNew("Переменные…")
         btnVars.SetTooltipText("Переменные {{ var }}: глобальные и для конкретных хостов")
         btnVars.Connect("clicked", func() { showPlaybookVarsDialog() })
@@ -295,10 +304,13 @@ func newPlaybookUI() *PlaybookUI {
         btnSecrets.Connect("clicked", func() { showSecretsManager() })
         btnTpl := buttonNew("Сохранить как шаблон")
         btnTpl.Connect("clicked", func() { u.saveAsTemplate() })
-        setRow.PackStart(btnVars, false, false, 0)
-        setRow.PackStart(btnSecrets, false, false, 0)
-        setRow.PackStart(btnTpl, false, false, 0)
-        metaBox.PackStart(setRow, false, false, 2)
+        setRow2.PackStart(btnVars, false, false, 0)
+        setRow2.PackStart(btnSecrets, false, false, 0)
+        setRow2.PackStart(btnTpl, false, false, 0)
+        metaBox.PackStart(setRow2, false, false, 2)
+        // NB: строка metaBox.PackStart(setRow, …) была здесь в v1.13.1 —
+        // повторная упаковка уже родительского setRow давала Gtk-CRITICAL
+        // («_gtk_widget_get_parent (child) == NULL») при каждом запуске.
         u.connectRunSettings()
 
         // ===== right: task form =====
@@ -396,10 +408,15 @@ func newPlaybookUI() *PlaybookUI {
         // v1.9.0: таймаут шага и повторы — в раскрытии
         expCtl, _ := gtk.ExpanderNew("Таймаут, повторы и разрешение повторного запуска")
         expGrid := mkGrid()
-        expGrid.attach(labelNew("Таймаут шага, с (0 — общий):"), 0, 0, 1, 1)
+        lto := labelNew("Таймаут шага, с:")
+        lto.SetTooltipText("Максимальная длительность одного шага в секундах; 0 — использовать общий таймаут запуска")
+        expGrid.attach(lto, 0, 0, 1, 1)
         u.stepTimeoutS, _ = gtk.SpinButtonNewWithRange(0, 86400, 30)
         expGrid.attach(u.stepTimeoutS, 1, 0, 1, 1)
-        u.allowRetryC, _ = gtk.CheckButtonNewWithLabel("Разрешён повторный запуск (авто-повторы и «Повторить неудачные»)")
+        // v1.13.1: длинная подпись (476 px) раздувала сетку формы до 689 px.
+        // Полный смысл — в подсказке.
+        u.allowRetryC, _ = gtk.CheckButtonNewWithLabel("Разрешён повторный запуск")
+        u.allowRetryC.SetTooltipText("Задачи с включённым флагом повторяются автоматически\nи доступны кнопке «Повторить неудачные»")
         u.allowRetryC.SetTooltipText("Приложение не решает за вас, безопасно ли повторять команду:\nповторы работают только для задач с этим флагом")
         expGrid.attach(u.allowRetryC, 1, 1, 1, 1)
         expGrid.attach(labelNew("Авто-повторов:"), 0, 2, 1, 1)
@@ -466,6 +483,14 @@ func (u *PlaybookUI) fillActions() {
 func entryNew(placeholder string) *gtk.Entry {
         e, _ := gtk.EntryNew()
         e.SetPlaceholderText(placeholder)
+        // v1.13.2: GTK запрашивает минимум ~172 px на каждый entry
+        // (пустое поле без width-chars), а таких полей на странице десятки —
+        // суммарная минимальная ширина страницы доходила до 1136 px
+        // («Плейбук») и 497 px (ряд добавления на «Хостах»), GtkStack не
+        // ужал страницы при окне 1180 и СРЕЗАЛ правую часть карточек.
+        // width-chars задаёт компактный минимум; при наличии места поле
+        // всё равно растягивается (natural width не ограничен).
+        e.SetWidthChars(12)
         return e
 }
 
@@ -1302,6 +1327,7 @@ func probeHosts(ips []string, d time.Duration) []string {
         for i, ip := range ips {
                 wg.Add(1)
                 go func(i int, ip string) {
+                        defer crashRecover("плейбук: хост")
                         defer wg.Done()
                         sem <- struct{}{}
                         defer func() { <-sem }()

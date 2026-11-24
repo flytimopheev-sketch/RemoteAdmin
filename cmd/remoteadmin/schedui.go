@@ -43,15 +43,20 @@ func newSchedUI() *SchedUI {
         toolbar := boxNew(gtk.ORIENTATION_HORIZONTAL, 4)
         btnAdd := buttonNew("Новое расписание")
         addClass(btnAdd, "suggested-action")
+        addClass(btnAdd, "tbtn")
         btnAdd.Connect("clicked", func() { u.addDialog() })
-        btnEdit := buttonNew("✎ Изменить")
+        btnEdit := buttonNew("Изменить")
+        addClass(btnEdit, "tbtn")
         btnEdit.Connect("clicked", func() { u.editSelected() })
         btnDel := buttonNew("Удалить")
+        addClass(btnDel, "tbtn")
         btnDel.Connect("clicked", func() { u.deleteSelected() })
         btnRun := buttonNew("Запустить сейчас")
+        addClass(btnRun, "tbtn")
         btnRun.SetTooltipText("Выполнить выбранное расписание немедленно, не дожидаясь времени cron")
         btnRun.Connect("clicked", func() { u.runNow() })
         btnTgl := buttonNew("Вкл/Выкл")
+        addClass(btnTgl, "tbtn")
         btnTgl.SetTooltipText("Включить или выключить выбранные расписания")
         btnTgl.Connect("clicked", func() { u.toggleSelected() })
         toolbar.PackStart(btnAdd, false, false, 0)
@@ -64,6 +69,18 @@ func newSchedUI() *SchedUI {
         u.tree, u.st = makeTree([]string{"Название", "Шаблон", "Группа", "Cron", "Следующий запуск", "Статус", ""},
                 []glib.Type{glib.TYPE_STRING, glib.TYPE_STRING, glib.TYPE_STRING, glib.TYPE_STRING, glib.TYPE_STRING, glib.TYPE_STRING, glib.TYPE_STRING})
         hideCol(u.tree, SCOL_HNAME)
+        // v1.13.0 (жалоба: «столбцы нельзя передвигать налево-направо»):
+        // колонки можно перетаскивать мышью и менять их ширину.
+        n := 0
+        for c := u.tree.GetColumns(); c != nil; c = c.Next() {
+                if col, ok := c.Data().(*gtk.TreeViewColumn); ok && col != nil {
+                        if n != SCOL_HNAME {
+                                col.SetReorderable(true)
+                                col.SetResizable(true)
+                        }
+                }
+                n++
+        }
         sc := scrolled(u.tree, 0)
         sc.SetVExpand(true)
         root.PackStart(sc, true, true, 0)

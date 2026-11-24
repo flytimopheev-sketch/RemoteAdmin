@@ -207,6 +207,12 @@ func newHostsUI() *HostsUI {
         searchRow := boxNew(gtk.ORIENTATION_HORIZONTAL, 4)
         u.search, _ = gtk.SearchEntryNew()
         u.search.SetPlaceholderText("Поиск хостов и групп (Ctrl+F)…")
+        // v1.13.1: без width-chars минимальная ширина entry = ширина
+        // всего placeholder (~490 px) — страница «Хосты» требовала 1355 px
+        // и GtkStack обрезал ВСЕ вкладки при узком окне. 16 символов:
+        // минимум ~160 px, а при расширении строки entry всё равно
+        // растягивается (expand=true) и placeholder виден целиком.
+        u.search.SetWidthChars(16)
         u.search.Connect("changed", func() {
                 u.filter = strings.ToLower(entText(&u.search.Entry))
                 u.refreshHostList()
@@ -304,13 +310,14 @@ func newHostsUI() *HostsUI {
 
         addRow := boxNew(gtk.ORIENTATION_HORIZONTAL, 3)
         u.addEntry, _ = gtk.EntryNew()
+        u.addEntry.SetWidthChars(8) // v1.13.2: компактный минимум ряда добавления
         u.addEntry.SetPlaceholderText("IP или список через запятую/пробел")
         addRow.PackStart(u.addEntry, true, true, 0)
         btnAdd := buttonNew("Добавить")
         btnAdd.GetStyleContext()
         btnAdd.Connect("clicked", func() { u.addFromEntry() })
         u.addEntry.Connect("activate", func() { u.addFromEntry() })
-        btnEdit := buttonNew("✎ Изменить")
+        btnEdit := buttonNew("Изменить")
         btnEdit.SetTooltipText("Изменить имя, адрес и группу выбранного хоста (или двойной клик по строке)")
         btnEdit.Connect("clicked", func() {
                 ips := u.selectedHosts()
@@ -328,22 +335,41 @@ func newHostsUI() *HostsUI {
         midBox.PackStart(addRow, false, false, 0)
 
         // ===== right: quick actions =====
-        rightCard, rightBox := cardBox("Действия")
+        // v1.13.2: карточка «Действия» высокая (доступы + действия + импорт
+        // ≈ 600 px), а видимой странице достаётся ~440 px — карточка задавала
+        // странице минимальную высоту 700 px, GtkStack прокручивал страницу,
+        // и низ карточки (кнопки импорта) пропадал под сгибом. Теперь
+        // содержимое карточки живёт в СВОЕЙ вертикальной прокрутке
+        // (минимум 120 px): страница «Хосты» стала компактной, панель
+        // никогда не срезается, при тесном окне карточка прокручивается
+        // внутри себя.
+        rightCard, rightOuter := cardBox("Действия")
+        rightBox := boxNew(gtk.ORIENTATION_VERTICAL, 6)
+        rsc, _ := gtk.ScrolledWindowNew(nil, nil)
+        rsc.SetPolicy(gtk.POLICY_NEVER, gtk.POLICY_AUTOMATIC)
+        rsc.SetMinContentHeight(120)
+        rsc.Add(rightBox)
+        rightOuter.PackStart(rsc, true, true, 0)
 
         credGrid := mkGrid()
         userE, _ := gtk.EntryNew()
+        userE.SetWidthChars(12) // v1.13.2
         userE.SetPlaceholderText("Пользователь SSH")
         passE, _ := gtk.EntryNew()
+        passE.SetWidthChars(12) // v1.13.2
         passE.SetPlaceholderText("Пароль")
         passE.SetVisibility(false)
         rootE, _ := gtk.EntryNew()
+        rootE.SetWidthChars(12) // v1.13.2
         rootE.SetPlaceholderText("Пароль root (su)")
         rootE.SetVisibility(false)
         useRootC, _ := gtk.CheckButtonNewWithLabel("Повышать до root (su)")
         useRootC.SetActive(store.State.UseRoot)
         keyE, _ := gtk.EntryNew()
+        keyE.SetWidthChars(12) // v1.13.2
         keyE.SetPlaceholderText("Путь к SSH-ключу (опц.)")
         keyPassE, _ := gtk.EntryNew()
+        keyPassE.SetWidthChars(12) // v1.13.2
         keyPassE.SetPlaceholderText("Пароль ключа (опц.)")
         keyPassE.SetVisibility(false)
 
@@ -364,6 +390,8 @@ func newHostsUI() *HostsUI {
         rightBox.PackStart(credGrid.w, false, false, 0)
 
         saveCred := buttonNew("Сохранить доступы")
+        saveCred.SetHAlign(gtk.ALIGN_CENTER)
+        addClass(saveCred, "actbtn")
         saveCred.Connect("clicked", func() {
                 store.State.Username = entText(userE)
                 store.SetPassword(entText(passE))
@@ -379,17 +407,18 @@ func newHostsUI() *HostsUI {
         sep1, _ := gtk.SeparatorNew(gtk.ORIENTATION_HORIZONTAL)
         rightBox.PackStart(sep1, false, false, 2)
 
-        // ===== v1.12.0: аккуратная сетка быстрых действий (2 колонки) =====
-        // «Заменить файл…» убрана по отзыву: загрузкой/заменой файлов занимается
-        // вкладка SFTP (двухпанельный менеджер), а дублирующая кнопка только
-        // замусоривала панель. Вместо неё — «Диски» и «Обновления».
+        // v1.13.0 (жалоба: «кнопки очень крупные при увеличении окна»):
+        // кнопки быстрых действий больше не растягиваются на всю ширину
+        // карточки — фиксированная компактная ширина (.actbtn), сетка
+        // центрируется. Панель выглядит аккуратно при любом размере окна.
         actGrid, _ := gtk.GridNew()
         actGrid.SetRowSpacing(5)
         actGrid.SetColumnSpacing(5)
+        actGrid.SetHAlign(gtk.ALIGN_CENTER)
         mkAct := func(row, col, span int, label, tip string, fn func()) *gtk.Button {
                 b := buttonNew(label)
                 b.SetTooltipText(tip)
-                b.SetHExpand(true)
+                addClass(b, "actbtn")
                 actGrid.Attach(b, col, row, span, 1)
                 b.Connect("clicked", func() { fn() })
                 return b
@@ -404,8 +433,8 @@ func newHostsUI() *HostsUI {
                 "Выбрать скрипт, посмотреть его и подтвердить запуск на выбранных хостах",
                 func() { u.scriptRunDialog() })
         addClass(btnScript, "suggested")
-        mkAct(2, 0, 1, "Диски (df -h)",
-                "Заполненность файловых систем на выбранных хостах",
+        mkAct(2, 0, 1, "Диски",
+                "Заполненность файловых систем (df -h) на выбранных хостах",
                 func() { runDiskAction(u.selectedHosts()) })
         mkAct(2, 1, 1, "Обновления",
                 "Проверить доступные обновления пакетов (dnf check-update) — без установки",
@@ -419,6 +448,7 @@ func newHostsUI() *HostsUI {
         rightBox.PackStart(actGrid, false, false, 0)
 
         cmdE, _ := gtk.EntryNew()
+        cmdE.SetWidthChars(12) // v1.13.2
         cmdE.SetPlaceholderText("Быстрая команда… (↑↓ — история)")
         rightBox.PackStart(cmdE, false, false, 0)
         hist := newHistory()
@@ -456,7 +486,6 @@ func newHostsUI() *HostsUI {
         sep2, _ := gtk.SeparatorNew(gtk.ORIENTATION_HORIZONTAL)
         rightBox.PackStart(sep2, false, false, 2)
 
-        irow := boxNew(gtk.ORIENTATION_HORIZONTAL, 3)
         btnImp := buttonNew("Импорт файла")
         btnImp.SetTooltipText("Импорт хостов из файла: Ansible inventory (INI/YAML) или простой список по одному в строке")
         btnImp.Connect("clicked", func() { importAnsibleDialog() })
@@ -469,18 +498,24 @@ func newHostsUI() *HostsUI {
         btnExp := buttonNew("Экспорт")
         btnExp.SetTooltipText("Экспорт в Ansible inventory (INI/YAML)")
         btnExp.Connect("clicked", func() { exportAnsibleDialog() })
-        irow.PackStart(btnImp, true, true, 0)
-        irow.PackStart(btnRem, true, true, 0)
-        irow.PackStart(btnPaste, true, true, 0)
-        irow.PackStart(btnExp, true, true, 0)
-        rightBox.PackStart(irow, false, false, 0)
+        // v1.13.1: один ряд из 4 кнопок требовал ~500 px (панель Действия
+        // не влезала при узком окне) — сетка 2×2 занимает ~250 px.
+        impGrid, _ := gtk.GridNew()
+        impGrid.SetRowSpacing(4)
+        impGrid.SetColumnSpacing(4)
+        impGrid.Attach(btnImp, 0, 0, 1, 1)
+        impGrid.Attach(btnRem, 1, 0, 1, 1)
+        impGrid.Attach(btnPaste, 0, 1, 1, 1)
+        impGrid.Attach(btnExp, 1, 1, 1, 1)
+        impGrid.SetHAlign(gtk.ALIGN_FILL)
+        rightBox.PackStart(impGrid, false, false, 0)
 
         // панели регулируются мышью: границы можно тянуть влево-вправо,
         // положение запоминается между сеансами
         root.PackStart(makeHPaned("hosts-groups",
                 leftCard,
-                makeHPaned("hosts-actions", midCard, rightCard, 480),
-                190), true, true, 0)
+                makeHPaned("hosts-actions", midCard, rightCard, 560),
+                240), true, true, 0)
 
         u.refreshAll()
         u.widget = root

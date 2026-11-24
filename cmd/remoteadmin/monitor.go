@@ -318,6 +318,7 @@ func (u *MonitorUI) refreshOnce() {
 	for _, ip := range ips {
 		wg.Add(1)
 		go func(ip string) {
+			defer crashRecover("мониторинг: хост")
 			defer wg.Done()
 			st := u.collectStat(ip)
 			glibIdle(func() { u.applyStat(ip, st) })

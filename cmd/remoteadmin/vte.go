@@ -310,6 +310,7 @@ func startPTYBridge(v *vteTerm, stdout io.Reader, stdin io.WriteCloser, onOut fu
 
         // stdout: ssh → slave (VTE отрисует)
         go func() {
+                defer crashRecover("VTE stdout")
                 buf := make([]byte, 8192)
                 for {
                         select {
@@ -336,6 +337,7 @@ func startPTYBridge(v *vteTerm, stdout io.Reader, stdin io.WriteCloser, onOut fu
 
         // stdin: VTE (master) → slave → ssh stdin
         go func() {
+                defer crashRecover("VTE stdin")
                 buf := make([]byte, 4096)
                 for {
                         select {

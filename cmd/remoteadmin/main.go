@@ -18,6 +18,7 @@ func main() {
                 case "--help", "-h":
                         fmt.Printf("%s %s — SSH-менеджер группы хостов\n", AppName, AppVersion)
                         fmt.Println("  --selftest   запустить самопроверку интерфейса (headless)")
+                        fmt.Println("  --scheduler-daemon  фоновый планировщик без GUI (cron работает при закрытом окне)")
                         fmt.Println("  --version    показать версию")
                         return
                 }
@@ -25,6 +26,7 @@ func main() {
 
         selftest := false
         autotest := false
+        daemon := false
         shotDir := ""
         shotDialogs := ""
         for _, a := range os.Args[1:] {
@@ -33,6 +35,9 @@ func main() {
                 }
                 if a == "--autotest" {
                         autotest = true
+                }
+                if a == "--scheduler-daemon" {
+                        daemon = true
                 }
                 if strings.HasPrefix(a, "--shot=") {
                         shotDir = strings.TrimPrefix(a, "--shot=")
@@ -48,6 +53,14 @@ func main() {
         }
         auditInit()
         initKnownHosts()
+
+        // v1.13.0: фоновый планировщик — работает без GUI, пока окно закрыто
+        // (ответ на вопрос «если программу закрыть, планировщик не будет
+        // работать?»). См. runSchedulerDaemon в scheduler.go.
+        if daemon {
+                runSchedulerDaemon()
+                return
+        }
 
         // RA_DEMO_SSH=1 — встроенный демо-хост (принимает любые логин/пароль):
         // позволяет попробовать SSH/SFTP без реального сервера.

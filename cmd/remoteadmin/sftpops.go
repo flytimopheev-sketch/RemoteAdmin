@@ -281,6 +281,7 @@ func mirrorPanel(u *SFTPUI, diff []panelEntry, ltr bool) {
 	app.setStatus("Зеркалирование панелей…")
 	logf("info", "🔁 Зеркалирование: %d файл(ов), %s", len(jobs), humanSize(total))
 	go func() {
+		defer crashRecover("зеркалирование SFTP")
 		var okN, failN int
 		sf := u.sftpClient()
 		if sf == nil {

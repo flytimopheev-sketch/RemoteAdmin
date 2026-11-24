@@ -222,6 +222,7 @@ func buildExecPanel() gtk.IWidget {
         evHint := labelNew("Подключения, действия пользователя, ошибки приложения. Двойной щелчок — полный вывод команды.")
         addClass(evHint, "ramuted")
         evHint.SetXAlign(0)
+        evHint.SetLineWrap(true)
         btnClear := buttonNew("Очистить")
         btnClear.SetTooltipText("Очистить журнал событий")
         btnClear.Connect("clicked", func() { app.log.clear() })
@@ -722,7 +723,7 @@ func (p *ExecPanel) retryFailed() {
                 hosts = append(hosts, ip)
         }
         newS := buildRunSession(hosts, tasks, "Повтор: "+s.Label, s.vars)
-        go func() { newS.runSession() }()
+        goSafe("повтор неудачных", func() { newS.runSession() })
         logf("accent", "↻ Повтор неудачных: %d задач на %d хост(ов)", len(tasks), len(hosts))
 }
 

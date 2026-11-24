@@ -28,6 +28,7 @@ func Notify(summary, body string) {
 		return
 	}
 	go func() {
+		defer crashRecover("уведомление")
 		if err := dbusNotify(AppName, summary, body); err != nil {
 			if err := notifySend(summary, body); err != nil {
 				logf("info", "🔔 %s — %s (без уведомления: %v)", summary, body, err)

@@ -68,6 +68,10 @@ func needCreds() bool {
 // updating host badges and the global progress bar.
 func runParallel(ips []string, taskName string, fn func(ip string) (string, error)) {
         if len(ips) == 0 {
+                if daemonMode {
+                        logf("fail", "%s: не выбрано ни одного хоста", taskName)
+                        return
+                }
                 warnDialog(app.window, "Не выбрано ни одного хоста")
                 return
         }
@@ -76,11 +80,13 @@ func runParallel(ips []string, taskName string, fn func(ip string) (string, erro
                 parallel = 8
         }
         for _, ip := range ips {
-                app.hostsUI.updateStatusRow(ip, "run")
+                if app != nil && app.hostsUI != nil {
+                        app.hostsUI.updateStatusRow(ip, "run")
+                }
         }
         startedAt := time.Now()
         doneCh := make(chan struct{}, len(ips))
-        go func() {
+        goSafe("задача "+taskName, func() {
                 sem := make(chan struct{}, parallel)
                 var wg sync.WaitGroup
                 var mu sync.Mutex
@@ -89,6 +95,7 @@ func runParallel(ips []string, taskName string, fn func(ip string) (string, erro
                 for _, ip := range ips {
                         wg.Add(1)
                         go func(ip string) {
+                                defer crashRecover(taskName + " → " + ip)
                                 defer wg.Done()
                                 sem <- struct{}{}
                                 defer func() { <-sem }()
@@ -147,18 +154,24 @@ func runParallel(ips []string, taskName string, fn func(ip string) (string, erro
                                         Status: st,
                                         Output: out,
                                 }, line)
-                                glibIdle(func() {
-                                        app.hostsUI.updateStatusRow(ip, status)
-                                        app.setProgress(d, t)
-                                        app.setStatus(fmt.Sprintf("%s: %d/%d (ОК %d, ошибок %d)", taskName, d, t, okN, failN))
-                                })
+                                if daemonMode {
+                                        logf("info", "%s → %s: %s (%d/%d, ОК %d, ошибок %d)", taskName, ip, st, d, t, okN, failN)
+                                } else {
+                                        glibIdle(func() {
+                                                app.hostsUI.updateStatusRow(ip, status)
+                                                app.setProgress(d, t)
+                                                app.setStatus(fmt.Sprintf("%s: %d/%d (ОК %d, ошибок %d)", taskName, d, t, okN, failN))
+                                        })
+                                }
                                 doneCh <- struct{}{}
                         }(ip)
                 }
                 wg.Wait()
-                glibIdle(func() {
+                finish := func() {
                         logf("accent", fmt.Sprintf("🏁 %s завершено: всего %d, ОК %d, ошибок %d", taskName, len(ips), okN, failN))
-                        Notify(taskName, fmt.Sprintf("Готово: %d ОК, %d ошибок из %d", okN, failN, len(ips)))
+                        if !daemonMode {
+                                Notify(taskName, fmt.Sprintf("Готово: %d ОК, %d ошибок из %d", okN, failN, len(ips)))
+                        }
                         // внешние уведомления: webhook и e-mail (если настроены)
                         notifyDone(taskName, ips, okN, failN, warnN)
                         // аудит: кто, когда, что и на каких хостах запускал
@@ -172,8 +185,13 @@ func runParallel(ips []string, taskName string, fn func(ip string) (string, erro
                                 Seconds: time.Since(startedAt).Seconds(),
                         })
                         _ = store.Save()
-                })
-        }()
+                }
+                if daemonMode {
+                        finish()
+                } else {
+                        glibIdle(finish)
+                }
+        })
 }
 
 // ---------- privileged exec helper ----------

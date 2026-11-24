@@ -156,6 +156,8 @@ func newMultiTermUI() *MultiTermUI {
 
         // placeholder when nothing is connected
         ph := labelNew("Нет активных сессий.\n\n1. Отметьте хосты на вкладке «Хосты»\n2. Нажмите «Подключить выбранные»\n3. По умолчанию каждый терминал открывается В СВОЁМ ОКНЕ — его можно\n    перемещать, сворачивать и разворачивать; печатайте прямо в него\n4. Или используйте Broadcast внизу — команда уйдёт во все терминалы с галочкой ⇉\n5. Кнопка ⤢ в ячейке открепляет терминал в отдельное окно\n\nmc, top, vim и другие полноэкранные программы работают как в настоящем терминале")
+        ph.SetLineWrap(true)
+        ph.SetJustify(gtk.JUSTIFY_LEFT)
         ph.SetJustify(gtk.JUSTIFY_CENTER)
         ph.SetHAlign(gtk.ALIGN_CENTER)
         ph.SetVAlign(gtk.ALIGN_CENTER)
@@ -239,7 +241,7 @@ func (u *MultiTermUI) startAll() {
                                 u.grid.ShowAll()
                         }
                         u.setHead(s, "◌", "#60a5fa", "подключение…")
-                        go u.runSession(s)
+                        goSafe("терминал: сессия", func() { u.runSession(s) })
                 })
         }
         u.refreshBcastLabel()
@@ -622,6 +624,7 @@ func (u *MultiTermUI) closeOne(s *termSession) {
         u.stopSession(s)
         s.cell.vte.markDead()
         go func() {
+                defer crashRecover("терминал: kill")
                 if s.alive && s.sess != nil {
                         _ = s.sess.Signal(ssh.SIGKILL)
                         _ = s.sess.Close()

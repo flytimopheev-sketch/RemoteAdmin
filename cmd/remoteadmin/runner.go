@@ -162,6 +162,7 @@ func execSeparate(cl *ssh.Client, hostKey, cmd string, timeoutSec int) execOut {
         sess.Stdout = &so
         sess.Stderr = &se
         go func() {
+                defer crashRecover("Exec sess.Run")
                 err := sess.Run(cmd)
                 rc := 0
                 if err != nil {
@@ -201,7 +202,10 @@ func execRootSeparate(cl *ssh.Client, hostKey, cmd, rootPass string, timeoutSec 
         sess.Stdout = &so
         sess.Stderr = &se
         done := make(chan error, 1)
-        go func() { done <- sess.Run("su - root -c " + quoted) }()
+        go func() {
+                defer crashRecover("ExecRoot sess.Run")
+                done <- sess.Run("su - root -c " + quoted)
+        }()
         timeout := time.Duration(timeoutSec) * time.Second
         if timeoutSec <= 0 {
                 timeout = 120 * time.Second
@@ -270,6 +274,7 @@ func buildRunSession(ips []string, tasks []PlaybookTask, label string, vars map[
 
 // runSession выполняет запуск; блокируется до конца. true = остановлено вручную.
 func (s *RunSession) runSession() bool {
+        defer crashRecover("выполнение задач")
         if runnerHooks.onRunStart != nil {
                 runnerHooks.onRunStart(s)
         }
@@ -278,6 +283,7 @@ func (s *RunSession) runSession() bool {
 
         if s.RunTimeoutSec > 0 {
                 go func() {
+                        defer crashRecover("watchdog таймаута")
                         time.Sleep(time.Duration(s.RunTimeoutSec) * time.Second)
                         // общий таймаут истёк — если запуск ещё идёт, останавливаем всё
                         if curSession.Load() == s {
@@ -289,13 +295,20 @@ func (s *RunSession) runSession() bool {
         }
 
         for _, ip := range s.Hosts {
-                app.hostsUI.updateStatusRow(ip, "run")
+                // v1.13.2: в daemon-режиме (app == nil) бейджи статуса не нужны —
+                // раньше здесь был неограждённый вызов и планировщик без GUI
+                // падал при каждом запуске шаблона (panic ловился crashRecover,
+                // но выполнение срывалось — запись в crash.log).
+                if !daemonMode && app != nil && app.hostsUI != nil {
+                        app.hostsUI.updateStatusRow(ip, "run")
+                }
         }
 
         sem := make(chan struct{}, s.Parallel)
         for _, ip := range s.Hosts {
                 s.waitAll.Add(1)
                 go func(ip string) {
+                        defer crashRecover("запуск задач: хост")
                         defer s.waitAll.Done()
                         sem <- struct{}{}
                         defer func() { <-sem }()
@@ -634,7 +647,7 @@ func (s *RunSession) setResult(host string, idx int, r TaskResult) {
                         s.mu.Unlock()
                         if runnerHooks.onResult != nil {
                                 res := r
-                                go runnerHooks.onResult(res)
+                                goSafe("runner hooks", func() { runnerHooks.onResult(res) })
                         }
                         return
                 }

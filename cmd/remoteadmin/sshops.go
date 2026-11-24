@@ -427,6 +427,7 @@ func Exec(cl *ssh.Client, cmd string, timeoutSec int) (string, error) {
         }
         ch := make(chan res, 1)
         go func() {
+                defer crashRecover("SSH: сессия")
                 sess, err := cl.NewSession()
                 if err != nil {
                         ch <- res{"", err}
@@ -486,6 +487,7 @@ func ExecRoot(cl *ssh.Client, cmd string, rootPass string, timeoutSec int) (stri
         sess.Stdout = &buf
         sess.Stderr = &buf
         go func() {
+                defer crashRecover("SSH: su-сеанс")
                 runErrCh <- sess.Run("su - root -c " + quoted)
                 close(done)
         }()

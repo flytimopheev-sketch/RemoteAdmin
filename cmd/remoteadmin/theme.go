@@ -248,7 +248,7 @@ treeview.monrow { font-size: 12px; }
 
         // ---- buttons ----
         w(`
-button { background-image: none; background-color: %s; color: %s; border-radius: 10px; padding: 6px 14px; border: 1px solid %s; text-shadow: none; box-shadow: none; min-height: 18px; font-weight: 600; transition: all 120ms ease; }
+button { background-image: none; background-color: %s; color: %s; border-radius: 10px; padding: 6px 10px; border: 1px solid %s; text-shadow: none; box-shadow: none; min-height: 18px; font-weight: 600; transition: all 120ms ease; }
 button:hover { background-image: none; background-color: %s; border-color: %s; }
 button:active { background-image: none; background-color: %s; }
 button:disabled { opacity: 0.40; }
@@ -268,6 +268,15 @@ button.flat:hover { background-image: none; background-color: %s; }
                 p.Danger, a(p.Danger, 0.45),
                 a(p.Danger, 0.12), p.Danger, a(p.Danger, 0.45),
                 p.Hover)
+
+        // ---- v1.13.0: единые компактные кнопки (Действия/Шаблоны/Цепочки) ----
+        // жалоба v1.12.0: кнопки растягивались при увеличении окна и были
+        // «все разные». Фиксированная ширина + центрирование блоков.
+        w(`
+.actbtn { padding: 5px 12px; }
+.tbtn { min-width: 104px; padding: 5px 8px; }
+.tbtn label { padding: 0; }
+`)
 
         // ---- inputs ----
         w(`
@@ -348,12 +357,17 @@ notebook > stack { background-color: transparent; }
 `, p.Dim, panelAlt, p.Text, a(p.Accent, 0.18), p.Text)
 
         // ---- раздвижные панели / контур изменения размера / пустые состояния ----
+        // v1.13.2 (жалоба: «выполнение/вывод/события не перемещается вниз»):
+        // ручка разделителя была 3 px — её невозможно было схватить мышью.
+        // Теперь 9 px, видна на фоне карточек и подсвечивается при наведении;
+        // при перетаскивании — акцентный цвет.
         w(`
 .raedge { background-color: transparent; min-height: 5px; min-width: 5px; }
-.rapaned > separator { background-image: none; background-color: %s; min-width: 3px; min-height: 3px; border: none; }
+.rapaned > separator { background-image: none; background-color: %s; min-width: 9px; min-height: 9px; border: none; border-radius: 3px; }
 .rapaned > separator:hover { background-color: %s; }
+.rapaned > separator:active { background-color: %s; }
 .raempty { color: %s; font-size: 13px; padding: 14px 6px; }
-`, a(p.Text, 0.10), p.Accent, p.Dim)
+`, a(p.Text, 0.16), p.Accent, p.Accent, p.Dim)
 
         return b.String()
 }

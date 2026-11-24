@@ -1,11 +1,15 @@
 package main
 
 import (
+        "bufio"
         "errors"
         "fmt"
+        "os"
+        "os/signal"
         "sort"
         "strconv"
         "strings"
+        "syscall"
         "time"
 )
 
@@ -241,6 +245,11 @@ func pad2(s string) string {
 
 // ---------- движок расписаний ----------
 
+// daemonMode — работа без GUI (--scheduler-daemon): расписание выполняется
+// в фоне, GTK не инициализируется, logf печатает в stdout, все обращения
+// к интерфейсу пропускаются (см. runParallel, schedulerTick).
+var daemonMode = false
+
 // scheduleDue проверяет: пора ли запускать (последний запуск был до
 // вычисленного предыдущего срабатывания).
 func scheduleDue(s Schedule, now time.Time) bool {
@@ -276,14 +285,59 @@ func schedulerTick() {
                         stamp := now.Format("2006-01-02 15:04:05")
                         s.LastRun = stamp
                         changed = true
-                        go runScheduled(*s, now)
+                        goSafe("расписание "+s.Name, func() { runScheduled(*s, now) })
                 }
         }
         if changed {
-                if u := app.schedUI; u != nil {
-                        u.refresh()
+                if app != nil && app.schedUI != nil {
+                        app.schedUI.refresh()
                 }
                 _ = store.Save()
+        }
+}
+
+// runSchedulerDaemon — фоновый режим планировщика (v1.13.0).
+//
+// Вопрос пользователя v1.12.0: «если программу закрыть — планировщик не
+// будет работать?» Раньше — да, таймер жил в GUI. Теперь приложение можно
+// запустить без окна: `remoteadmin --scheduler-daemon` — процесс висит в
+// фоне, проверяет cron каждые 20 секунд, выполняет шаблоны и пишет журнал
+// в stdout. Удобно под systemd-юзер-юнитом или в autostart.
+//
+// Если хранилище зашифровано мастер-паролем, пароль берётся из переменной
+// окружения RA_MASTER_PASS либо запрашивается в терминале.
+func runSchedulerDaemon() {
+        daemonMode = true
+        fmt.Printf("%s %s — планировщик работает в фоне (без GUI). Ctrl+C — выход.\n", AppName, AppVersion)
+        if pendingUnlock {
+                pass := os.Getenv("RA_MASTER_PASS")
+                if pass == "" {
+                        fmt.Print("Хранилище зашифровано — введите мастер-пароль: ")
+                        rd := bufio.NewReader(os.Stdin)
+                        line, _ := rd.ReadString('\n')
+                        pass = strings.TrimSpace(line)
+                }
+                if err := tryUnlockStore(pass); err != nil {
+                        fmt.Fprintln(os.Stderr, "Не удалось разблокировать хранилище:", err)
+                        os.Exit(1)
+                }
+                fmt.Println("Хранилище разблокировано.")
+        }
+        // закрытие данных при завершении (SIGINT/SIGTERM)
+        go func() {
+                c := make(chan os.Signal, 1)
+                signal.Notify(c, os.Interrupt, syscall.SIGTERM)
+                <-c
+                _ = store.Save()
+                fmt.Println("\nПланировщик остановлен.")
+                os.Exit(0)
+        }()
+        for {
+                func() {
+                        defer crashRecover("tick планировщика (daemon)")
+                        schedulerTick()
+                }()
+                time.Sleep(20 * time.Second)
         }
 }
 
