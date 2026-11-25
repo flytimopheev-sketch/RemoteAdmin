@@ -127,7 +127,7 @@ func runParallel(ips []string, taskName string, fn func(ip string) (string, erro
                                 mu.Unlock()
                                 out = redactSecrets(out) // секреты не должны попадать в журнал/хранилище
                                 addReport(taskName, ip, st, out)
-                                store.State.LastOutput[ip] = out
+                                store.SetLastOutput(ip, out) // v1.14.0: потокобезопасно (была гонка)
                                 // цвет строки = результат: зелёный OK / красный FAIL /
                                 // жёлтый WARN; двойной щелчок — полный вывод команды
                                 line := fmt.Sprintf("%s %s → %s", statusEmoji(st), ip, st)

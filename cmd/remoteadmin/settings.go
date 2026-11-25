@@ -46,13 +46,14 @@ func showSettingsDialog() {
         // appearance
         addSection(inner, "Внешний вид")
         themeC, _ := gtk.ComboBoxTextNew()
-        themeC.AppendText("Тёмная")
-        themeC.AppendText("Светлая")
-        if s.Theme == "light" {
-                themeC.SetActive(1)
-        } else {
-                themeC.SetActive(0)
+        themeActive := 0
+        for i, t := range themeList {
+                themeC.AppendText(t.title)
+                if t.id == activeThemeID() {
+                        themeActive = i
+                }
         }
+        themeC.SetActive(themeActive)
         grid.attach(labelNew("Тема:"), 0, row, 1, 1)
         grid.attach(themeC, 1, row, 1, 1)
         row++
@@ -147,8 +148,24 @@ func showSettingsDialog() {
         eHook := entryNew("https://example.com/hook или https://hooks.slack.com/services/…")
         eHook.SetText(s.WebhookURL)
         eHook.SetTooltipText("POST с JSON: {event, task, total, ok, failed, warn, hosts, time, status}")
+        btnHookHelp := buttonNew("Что это?")
+        btnHookHelp.SetTooltipText("Подробное объяснение: что такое webhook и для чего он нужен")
+        btnHookHelp.Connect("clicked", func() {
+                infoDialog(app.window, "Webhook URL — это адрес в интернете, куда программа отправляет HTTP POST с JSON-событием после каждой групповой задачи.\n\n"+
+                        "Для чего нужен:\n"+
+                        "• Slack / Mattermost — уведомление команды в чат:\n    https://hooks.slack.com/services/…\n"+
+                        "• Telegram-бот (через bridge), Zabbix, Grafana OnCall;\n"+
+                        "• собственный сервис (скрипт на сервере) — можно реагировать\n    на сбой автоматически: перезапустить службу, отправить СМС.\n\n"+
+                        "Как работает: RemoteAdmin делает POST на указанный URL с телом\n"+
+                        "{event: \"task.finished\", task: имя, ok: N, failed: N, warn: N,\n  hosts: [...], status: \"ok|warn|fail\", time: \"…\"}.\n"+
+                        "Заголовки: X-RemoteAdmin-Event и X-RemoteAdmin-Status.\n\n"+
+                        "Получатель (ваш сервис или чат-бот) разбирает JSON и решает сам,\nчто с ним делать. Кнопка «Проверить webhook» шлёт тестовое событие.")
+        })
+        hookRow := boxNew(gtk.ORIENTATION_HORIZONTAL, 6)
+        hookRow.PackStart(eHook, true, true, 0)
+        hookRow.PackStart(btnHookHelp, false, false, 0)
         grid4.attach(labelNew("Webhook URL:"), 0, row4, 1, 1)
-        grid4.attach(eHook, 1, row4, 1, 1)
+        grid4.attach(hookRow, 1, row4, 1, 1)
         row4++
 
         failOnlyC, _ := gtk.CheckButtonNewWithLabel("Отправлять только при ошибках/предупреждениях")
@@ -158,10 +175,11 @@ func showSettingsDialog() {
 
         eSMTP := entryNew("smtp.yandex.ru:465")
         eSMTP.SetText(s.EmailSMTP)
+        eSMTP.SetTooltipText("Хост:порт. Порт 465 — TLS сразу (как Evolution «SSL/TLS»),\n587 — STARTTLS. Порт определяется автоматически.")
         grid4.attach(labelNew("SMTP-сервер:"), 0, row4, 1, 1)
         grid4.attach(eSMTP, 1, row4, 1, 1)
         row4++
-        sslC, _ := gtk.CheckButtonNewWithLabel("TLS сразу (порт 465); снять — STARTTLS (587/25)")
+        sslC, _ := gtk.CheckButtonNewWithLabel("TLS сразу (порт 465); снять — STARTTLS (587/25)\nАвто: порт 465 всегда включает TLS сам")
         sslC.SetActive(s.EmailSSL)
         grid4.attach(sslC, 1, row4, 1, 1)
         row4++
@@ -196,17 +214,38 @@ func showSettingsDialog() {
                 }
         })
         btnTestMail := buttonNew("Проверить e-mail")
+        testStatus := labelNew("")
+        addClass(testStatus, "ramuted")
+        testStatus.SetXAlign(0)
         btnTestMail.Connect("clicked", func() {
-                if err := testEmailNow(entText(eSMTP), entText(eUser), entText(ePass), entText(eFrom), entText(eTo), sslC.GetActive()); err != nil {
-                        errDialog(app.window, "E-mail: "+err.Error())
-                } else {
-                        infoDialog(app.window, "Тестовое письмо отправлено на "+entText(eTo))
-                }
+                addr := entText(eSMTP)
+                user := entText(eUser)
+                pass := entText(ePass)
+                from := entText(eFrom)
+                to := entText(eTo)
+                useSSL := sslC.GetActive()
+                btnTestMail.SetSensitive(false)
+                testStatus.SetText("Отправка тестового письма…")
+                go func() {
+                        err := testEmailNow(addr, user, pass, from, to, useSSL)
+                        glibIdle(func() {
+                                btnTestMail.SetSensitive(true)
+                                if err != nil {
+                                        testStatus.SetText("Ошибка: " + err.Error())
+                                        errDialog(app.window, "E-mail: "+err.Error()+"\n\nПодсказка: порт 465 — TLS сразу (Mail.ru, Yandex), 587 — STARTTLS.\nДля Mail.ru/Yandex используйте «пароль приложения», а не пароль почты.")
+                                } else {
+                                        testStatus.SetText("Отправлено на " + to)
+                                        infoDialog(app.window, "Тестовое письмо отправлено на "+to+"\nЕсли письма нет — проверьте папку «Спам» и адрес «От кого».")
+                                }
+                        })
+                }()
         })
         testRow.PackStart(btnTestHook, false, false, 0)
         testRow.PackStart(btnTestMail, false, false, 0)
         grid4.attach(labelNew(""), 0, row4, 1, 1)
         grid4.attach(testRow, 1, row4, 1, 1)
+        row4++
+        grid4.attach(testStatus, 1, row4, 1, 1)
         row4++
         inner.PackStart(grid4.w, false, false, 4)
 
@@ -278,7 +317,9 @@ func showSettingsDialog() {
         }
 
         if d.Run() == gtk.RESPONSE_ACCEPT {
-                s.Theme = map[int]string{0: "dark", 1: "light"}[themeC.GetActive()]
+                if ti := themeC.GetActive(); ti >= 0 && ti < len(themeList) {
+                        s.Theme = themeList[ti].id
+                }
                 s.Opacity = scale.GetValue() / 100
                 s.ConnectTimeout = int(connSpin.GetValue())
                 s.ExecTimeout = int(execSpin.GetValue())

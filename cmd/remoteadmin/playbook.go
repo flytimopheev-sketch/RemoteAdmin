@@ -32,15 +32,17 @@ type pbType struct {
         Ru  string
 }
 
+// v1.14.0: в скобках — соответствующий модуль ansible: так понятнее,
+// «как это работает» тем, кто знает плейбуки ansible.
 var pbTypes = []pbType{
-        {"command", "Команда"},
-        {"script", "Скрипт"},
-        {"copy", "Копировать"},
-        {"replace", "Заменить файл"},
+        {"command", "Команда (ansible: shell)"},
+        {"script", "Скрипт (ansible: script)"},
+        {"copy", "Копировать файл (ansible: copy)"},
+        {"replace", "Заменить в файле (ansible: replace)"},
         {"replace_with_cmds", "Заменить + команды"},
-        {"edit", "Редактировать"},
-        {"service", "Служба systemctl"},
-        {"package", "Пакеты dnf/yum"},
+        {"edit", "Редактировать (правки строк)"},
+        {"service", "Служба (ansible: systemd)"},
+        {"package", "Пакеты (ansible: dnf/yum)"},
 }
 
 func pbTypeRu(key string) string {
@@ -230,33 +232,46 @@ func newPlaybookUI() *PlaybookUI {
         leftBox.PackStart(btnRow, false, false, 0)
 
         // ---- run controls (v1.9.0: в карточке меты, динамическая кнопка) ----
-        runRow := boxNew(gtk.ORIENTATION_HORIZONTAL, 3)
+        runRow := boxNew(gtk.ORIENTATION_HORIZONTAL, 4)
         u.runBtn = buttonNew("▶ Запустить плейбук")
         scr, _ := u.runBtn.GetStyleContext()
         scr.AddClass("suggested")
+        scr.AddClass("actbtn") // v1.14.0: компактная, не растягивается
         u.runBtn.SetTooltipText("Выполнить задачи на выбранных хостах")
         u.runBtn.Connect("clicked", func() { u.runPlaybook() })
 
         // «Проверить перед запуском»: параметры, доступность хостов, права
         btnPreflight := buttonNew("Проверить")
+        addClass(btnPreflight, "actbtn")
         btnPreflight.SetTooltipText("Проверить заполненность параметров, доступность хостов и наличие прав.\n\nПроверка не гарантирует безопасность произвольных команд — просмотрите команды перед запуском.")
         btnPreflight.Connect("clicked", func() { u.preflight() })
 
         // кнопка выбора хостов-получателей прямо здесь (без переключения вкладок)
         u.hostBtn = buttonNew("Цель: все")
+        addClass(u.hostBtn, "actbtn")
         u.hostBtn.SetTooltipText("Выбрать хосты для запуска плейбука")
         u.hostBtn.Connect("clicked", func() { u.showHostPicker() })
 
         // «Запланировать» — будильник рядом с запуском: создаёт шаблон из
         // текущего плейбука и открывает диалог расписания (вкладка «Планировщик»)
         btnSched := buttonNew("⏰ Запланировать")
+        addClass(btnSched, "actbtn")
         btnSched.SetTooltipText("Запланировать регулярный запуск этого плейбука\n(план сохраняется как шаблон → расписание с cron)")
         btnSched.Connect("clicked", func() { u.schedulePlaybook() })
 
-        runRow.PackStart(u.runBtn, true, true, 0)
+        // «Как это работает» — подсказка по модели ansible-плейбуков (v1.14.0)
+        btnHelp := buttonNew("?")
+        addClass(btnHelp, "actbtn")
+        btnHelp.SetTooltipText("Как работает последовательность задач (как в ansible)")
+        btnHelp.Connect("clicked", func() { showPlaybookHelp() })
+
+        // v1.14.0: все кнопки — естественной ширины в ряд, остальное место —
+        // подсказка. Раньше «Запустить» и «Цель» растягивались на пол-строки.
+        runRow.PackStart(u.runBtn, false, false, 0)
         runRow.PackStart(btnPreflight, false, false, 0)
-        runRow.PackStart(u.hostBtn, true, true, 0)
+        runRow.PackStart(u.hostBtn, false, false, 0)
         runRow.PackStart(btnSched, false, false, 0)
+        runRow.PackStart(btnHelp, false, false, 0)
         metaBox.PackStart(runRow, false, false, 2)
 
         // подсказка: почему запуск недоступен / готовность
@@ -297,12 +312,15 @@ func newPlaybookUI() *PlaybookUI {
         metaBox.PackStart(setRow, false, false, 2)
         setRow2 := boxNew(gtk.ORIENTATION_HORIZONTAL, 4)
         btnVars := buttonNew("Переменные…")
+        addClass(btnVars, "actbtn")
         btnVars.SetTooltipText("Переменные {{ var }}: глобальные и для конкретных хостов")
         btnVars.Connect("clicked", func() { showPlaybookVarsDialog() })
         btnSecrets := buttonNew("🔐 Секреты…")
+        addClass(btnSecrets, "actbtn")
         btnSecrets.SetTooltipText("Менеджер секретов: пароли/токены хранятся зашифрованными\nи подставляются по ссылке {{ secret:имя }}")
         btnSecrets.Connect("clicked", func() { showSecretsManager() })
         btnTpl := buttonNew("Сохранить как шаблон")
+        addClass(btnTpl, "actbtn")
         btnTpl.Connect("clicked", func() { u.saveAsTemplate() })
         setRow2.PackStart(btnVars, false, false, 0)
         setRow2.PackStart(btnSecrets, false, false, 0)
@@ -1892,4 +1910,33 @@ func rootPassFor(creds SSHCreds, root bool) string {
 
 func nowMs() int64 {
         return time.Now().UnixNano()
+}
+
+// showPlaybookHelp — подсказка «Как это работает» (v1.14.0).
+// Жалоба: «последовательность задач и параметры задач как это все работает,
+// хочется чтобы работало как ansible playbooks». Объясняем модель и
+// соответствие типов задач модулям ansible.
+func showPlaybookHelp() {
+	infoDialog(app.window, "ПЛЕЙБУК = ПОСЛЕДОВАТЕЛЬНОСТЬ ЗАДАЧ (как playbook в ansible)\n\n"+
+		"Модель выполнения:\n"+
+		"1. В списке слева вы собираете задачи по порядку — это ваш «плейбук».\n"+
+		"2. Задачи выполняются СТРОГО ПО ПОРЯДКУ на каждом хосте: шаг 1 → шаг 2 → шаг 3…\n"+
+		"3. Хосты обрабатываются ПАРАЛЛЕЛЬНО (сколько задано в «Параллельно хостов»),\n"+
+		"   но внутри одного хоста порядок всегда последовательный.\n"+
+		"4. «При ошибке» = ansible any_errors_fatal/ignore_errors: остановиться,\n"+
+		"   продолжить остальные хосты или спросить.\n"+
+		"5. У каждого шага: условие запуска (RunIf ≈ ansible when), таймаут,\n"+
+		"   повторы (≈ retries), отметка «от root» (≈ become: yes).\n\n"+
+		"Типы задач соответствуют модулям ansible:\n"+
+		"• Команда → shell/command   • Скрипт → script\n"+
+		"• Копировать файл → copy   • Заменить в файле → replace/lineinfile\n"+
+		"• Служба → systemd          • Пакеты → dnf/yum\n\n"+
+		"Параметры и переменные:\n"+
+		"• Переменные {{ имя }} подставляются в команды (≈ vars), значения можно\n"+
+		"  задавать глобально и для отдельных хостов (≈ host_vars).\n"+
+		"• {{ secret:имя }} — зашифрованный секрет (≈ ansible-vault), в журнале\n"+
+		"  значения замаскированы.\n\n"+
+		"Порядок задач можно менять стрелками ↑↓ или перетаскиванием мышью.\n"+
+		"«Сохранить как шаблон» — это переиспользуемый сценарий (≈ роль),\n"+
+		"его можно запускать и по расписанию во вкладке «Планировщик».")
 }

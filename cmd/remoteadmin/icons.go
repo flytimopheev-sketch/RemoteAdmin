@@ -6,10 +6,11 @@ package main
 // (binary coverage + box downsample gives free anti-aliasing) and cached as
 // PNG files in a per-user temp dir. No external assets needed.
 //
-// Style (v1.7.0): sidebar glyphs are SOLID white shapes with carved-out
-// details, sitting on colored gradient chips. Filled silhouettes read far
-// better at 17–18 px than thin line art — the icons stay crisp and
-// unambiguous ("мутные иконки" fix).
+// Style (v1.14.0): боковые глифы перерисованы в СОВРЕМЕННОМ линейном
+// стиле (тонкий штрих 1.7–1.9 px с круглыми окончаниями — как Lucide/
+// Feather/Fluent): жалоба v1.13.0 — «иконки вкладки мультяшно похожи,
+// не современно». Сплошные силуэты заменены контурными значками —
+// на цветной плитке они читаются не хуже, но выглядят по-взрослому.
 
 import (
         "fmt"
@@ -201,6 +202,21 @@ func (b *icoBuf) polyline(pts [][2]float64, sw float64) {
         }
 }
 
+// arc strokes a circular arc from a0 to a1 (radians, CCW) — smooth curves
+// for moon/shield/folder glyphs (v1.14.0).
+func (b *icoBuf) arc(cx, cy, r, a0, a1, sw float64) {
+        steps := int(math.Abs(a1-a0)*r/0.35) + 2
+        if steps < 8 {
+                steps = 8
+        }
+        pts := make([][2]float64, 0, steps+1)
+        for i := 0; i <= steps; i++ {
+                a := a0 + (a1-a0)*float64(i)/float64(steps)
+                pts = append(pts, [2]float64{cx + r*math.Cos(a), cy + r*math.Sin(a)})
+        }
+        b.polyline(pts, sw)
+}
+
 // polylineCut carves a chain of segments out of the shape.
 func (b *icoBuf) polylineCut(pts [][2]float64, sw float64) {
         for i := 0; i+1 < len(pts); i++ {
@@ -210,113 +226,112 @@ func (b *icoBuf) polylineCut(pts [][2]float64, sw float64) {
 
 // ---------- icon painters (24×24 design space) ----------
 //
-// Навигационные значки — ЗАПОЛНЕННЫЕ силуэты с вырезанными деталями:
-// на цветной плитке белый сплошной глиф читается мгновенно.
+// v1.14.0 — СОВРЕМЕННЫЙ линейный стиль: тонкий контур 1.7–1.9 px,
+// круглые окончания (cov даёт их бесплатно), минимум заливки.
+// Направление: Lucide/Feather (VS Code, GNOME 45+, Fluent).
+
+const icoSW = 1.8 // базовая толщина штриха
 
 var iconPainters = map[string]func(b *icoBuf){
-        // сервер: два блока с вырезанными индикатором и «лотком»
+        // сервер: два блока-контура с точкой и линией-«лотком» внутри
         "server": func(b *icoBuf) {
-                b.rrectFill(2.6, 3.4, 18.8, 7.6, 2.8)
-                b.circleCut(6.1, 7.2, 1.2)
-                b.covCut(10.8, 7.2, 18.2, 7.2, 0.75)
-                b.rrectFill(2.6, 13.0, 18.8, 7.6, 2.8)
-                b.circleCut(6.1, 16.8, 1.2)
-                b.covCut(10.8, 16.8, 18.2, 16.8, 0.75)
+                b.rrectStroke(3.0, 3.6, 18.0, 7.4, 2.2, icoSW)
+                b.circleFill(6.3, 7.3, 1.15)
+                b.cov(10.4, 7.3, 17.6, 7.3, 0.8)
+                b.rrectStroke(3.0, 13.0, 18.0, 7.4, 2.2, icoSW)
+                b.circleFill(6.3, 16.7, 1.15)
+                b.cov(10.4, 16.7, 17.6, 16.7, 0.8)
         },
-        // плейбук: плитка с ВЫРЕЗАННЫМ треугольником «пуск»
+        // плейбук: круг-контур с треугольником «пуск» внутри
         "play": func(b *icoBuf) {
-                b.rrectFill(2.8, 2.8, 18.4, 18.4, 5.6)
-                b.triCut(9.6, 7.8, 9.6, 16.2, 17.2, 12.0)
+                b.circleStroke(12, 12, 8.9, icoSW)
+                b.triFill(10.2, 7.9, 10.2, 16.1, 16.9, 12.0)
         },
-        // шаблоны: две карточки, задняя просвечивает щелью между ними
+        // шаблоны: две карточки-контура, передняя поверх задней со «щелью»
         "copy": func(b *icoBuf) {
-                b.rrectFill(3.0, 3.0, 12.6, 12.6, 3.2)
-                b.rrectCutStroke(8.6, 8.6, 12.4, 12.4, 3.2, 1.7)
-                b.rrectFill(8.6, 8.6, 12.4, 12.4, 3.2)
+                b.rrectStroke(3.2, 3.2, 12.4, 12.4, 2.6, icoSW)
+                b.rrectCut(7.0, 7.0, 15.4, 15.4, 4.2) // «ореол» передней карточки — задняя видимо проходит под ней
+                b.rrectStroke(8.6, 8.6, 12.2, 12.2, 2.6, icoSW)
         },
-        // цепочка: два звена-кольца, переплетённые в середине
+        // цепочка: два звена-контура, левое проходит перед правым
         "chain": func(b *icoBuf) {
-                b.rrectFill(2.4, 8.6, 12.0, 6.8, 3.4)
-                b.rrectFill(9.6, 8.6, 12.0, 6.8, 3.4)
-                b.rrectCut(3.7, 9.9, 9.4, 4.2, 2.1)
-                b.rrectCut(10.9, 9.9, 9.4, 4.2, 2.1)
+                b.rrectStroke(8.8, 8.9, 12.6, 6.2, 3.1, icoSW)
+                b.rrectCut(1.0, 7.3, 15.8, 9.4, 4.7) // «ореол» левого звена + щель
+                b.rrectStroke(2.6, 8.9, 12.6, 6.2, 3.1, icoSW)
         },
-        // планировщик: будильник с вырезанным циферблатом
+        // планировщик: круг-контур со стрелками-часами
         "clock": func(b *icoBuf) {
-                b.circleFill(12, 12.4, 8.8)
-                b.covCut(12, 7.4, 12, 12.6, 0.8)
-                b.covCut(12.4, 12.6, 16.4, 15.2, 0.8)
-                b.circleCut(12, 12.4, 0.85)
-                b.covCut(3.9, 4.7, 6.6, 3.1, 0.8)
-                b.covCut(20.1, 4.7, 17.4, 3.1, 0.8)
+                b.circleStroke(12, 12.2, 8.6, icoSW)
+                b.polyline([][2]float64{{12, 7.7}, {12, 12.4}, {15.9, 14.9}}, icoSW)
         },
-        // мониторинг: экран с вырезанной пульсирующей линией
+        // мониторинг: экран-контур с пульсовой линией
         "pulse": func(b *icoBuf) {
-                b.rrectFill(2.2, 4.0, 19.6, 16.0, 4.0)
-                b.polylineCut([][2]float64{{4.4, 12}, {7.6, 12}, {10.2, 7.2}, {14.0, 16.8}, {16.4, 12}, {19.6, 12}}, 2.1)
+                b.rrectStroke(2.8, 4.2, 18.4, 15.6, 3.2, icoSW)
+                b.polyline([][2]float64{{5.2, 12}, {8.2, 12}, {10.6, 7.8}, {13.4, 16.2}, {15.4, 12}, {18.8, 12}}, icoSW)
         },
-        // shield с галочкой: аудит/безопасность
+        // shield с галочкой: аудит/безопасность — контур щита с плавным низом
         "shield": func(b *icoBuf) {
-                b.rrectFill(2.6, 3.2, 18.8, 17.6, 8.4)
-                b.circleCut(12, 12, 4.4)
-                b.rrectFill(10.9, 8.2, 2.2, 7.6, 1.1)
-                b.rrectFill(10.9, 13.6, 6.0, 2.2, 1.1)
+                b.polyline([][2]float64{
+                        {12, 2.9}, {19.6, 5.7}, {19.6, 11.8},
+                        {19.3, 15.3}, {17.6, 18.2}, {14.6, 20.2}, {12, 21.0},
+                        {9.4, 20.2}, {6.4, 18.2}, {4.7, 15.3}, {4.4, 11.8},
+                        {4.4, 5.7}, {12, 2.9},
+                }, icoSW)
+                b.polyline([][2]float64{{8.9, 11.5}, {11.3, 13.9}, {15.3, 9.4}}, icoSW)
         },
-        // SFTP: папка с вырезанной линией под ярлыком
+        // SFTP: папка-контур с язычком
         "folder": func(b *icoBuf) {
-                b.rrectFill(2.4, 5.4, 8.6, 4.6, 1.9)
-                b.rrectFill(2.4, 7.6, 19.2, 11.2, 2.8)
-                b.covCut(2.4, 10.0, 21.6, 10.0, 0.6)
+                b.rrectStroke(2.9, 6.9, 18.2, 12.6, 2.4, icoSW)
+                b.polyline([][2]float64{{2.9, 7.9}, {2.9, 4.6}, {9.0, 4.6}, {11.2, 6.9}}, icoSW)
         },
-        // терминалы: окно с вырезанным промптом ">_"
+        // терминалы: окно-контур с промптом «>_»
         "term": func(b *icoBuf) {
-                b.rrectFill(2.2, 3.4, 19.6, 17.2, 4.0)
-                b.polylineCut([][2]float64{{6.2, 8.6}, {10.0, 12.0}, {6.2, 15.4}}, 1.7)
-                b.covCut(12.6, 15.6, 17.2, 15.6, 0.85)
+                b.rrectStroke(2.8, 3.6, 18.4, 16.8, 3.0, icoSW)
+                b.polyline([][2]float64{{6.4, 8.6}, {9.8, 12.0}, {6.4, 15.4}}, icoSW)
+                b.cov(12.2, 15.4, 17.0, 15.4, 0.85)
         },
-        // журнал: документ с вырезанными строками
+        // журнал: документ-контур со строками
         "doc": func(b *icoBuf) {
-                b.rrectFill(4.4, 2.6, 15.2, 18.8, 3.2)
-                b.covCut(7.6, 7.8, 16.4, 7.8, 0.95)
-                b.covCut(7.6, 11.8, 16.4, 11.8, 0.95)
-                b.covCut(7.6, 15.8, 12.8, 15.8, 0.95)
+                b.rrectStroke(4.6, 2.8, 14.8, 18.4, 2.6, icoSW)
+                b.cov(7.9, 7.8, 16.1, 7.8, 0.8)
+                b.cov(7.9, 11.6, 16.1, 11.6, 0.8)
+                b.cov(7.9, 15.4, 12.9, 15.4, 0.8)
         },
-        // ползунки: настройки
+        // ползунки: настройки — линии с кружками
         "sliders": func(b *icoBuf) {
-                b.polyline([][2]float64{{3, 7}, {21, 7}}, 1.7)
-                b.polyline([][2]float64{{3, 12}, {21, 12}}, 1.7)
-                b.polyline([][2]float64{{3, 17}, {21, 17}}, 1.7)
-                b.circleFill(15, 7, 2.4)
-                b.circleFill(8.6, 12, 2.4)
-                b.circleFill(17.4, 17, 2.4)
+                b.polyline([][2]float64{{3.2, 7}, {20.8, 7}}, icoSW)
+                b.polyline([][2]float64{{3.2, 12}, {20.8, 12}}, icoSW)
+                b.polyline([][2]float64{{3.2, 17}, {20.8, 17}}, icoSW)
+                b.circleFill(15.2, 7, 2.5)
+                b.circleFill(8.4, 12, 2.5)
+                b.circleFill(17.0, 17, 2.5)
         },
-        // moon: dark theme active
+        // moon: dark theme active — контурный полумесяц
         "moon": func(b *icoBuf) {
-                b.circleFill(11.4, 12.6, 7.6)
-                b.circleCut(16.6, 8.2, 6.8)
+                b.circleStroke(11.6, 12.4, 7.9, icoSW)
+                b.circleCut(17.6, 7.8, 6.9) // срезаем правый верх кольца — полумесяц
         },
         // sun: light theme active
         "sun": func(b *icoBuf) {
-                b.circleStroke(12, 12, 4.2, 1.8)
+                b.circleStroke(12, 12, 4.4, icoSW)
                 for i := 0; i < 8; i++ {
                         a := float64(i) * math.Pi / 4
-                        b.cov(12+6.4*math.Cos(a), 12+6.4*math.Sin(a), 12+9.4*math.Cos(a), 12+9.4*math.Sin(a), 0.85)
+                        b.cov(12+6.6*math.Cos(a), 12+6.6*math.Sin(a), 12+9.2*math.Cos(a), 12+9.2*math.Sin(a), 0.8)
                 }
         },
-        // broadcast/quick command
+        // молния: быстрые действия — контур без рамки
         "bolt": func(b *icoBuf) {
-                b.rrectFill(3, 3, 18, 18, 5.2)
-                b.polylineCut([][2]float64{{13.2, 6.6}, {10.4, 12.4}, {13.4, 12.4}, {11.0, 17.6}}, 1.7)
+                b.polyline([][2]float64{{13.6, 3.2}, {7.6, 13.2}, {12.0, 13.2}, {10.4, 20.8}, {16.4, 10.4}, {12.0, 10.4}, {13.6, 3.2}}, icoSW)
         },
-        // «i» в круге: о программе
+        // «i» в круге: о программе — контур
         "info": func(b *icoBuf) {
-                b.circleFill(12, 12, 9.2)
-                b.circleCut(12, 7.6, 1.35)
-                b.rrectCut(10.9, 10.4, 2.2, 7.2, 1.1)
+                b.circleStroke(12, 12, 8.9, icoSW)
+                b.circleFill(12, 7.7, 1.15)
+                b.cov(12, 10.8, 12, 16.4, 0.9)
         },
-        // звезда: избранное
+        // звезда: избранное — контур
         "star": func(b *icoBuf) {
-                cx, cy, r1, r2 := 12.0, 12.4, 9.0, 3.8
+                cx, cy, r1, r2 := 12.0, 12.4, 8.9, 3.9
                 var pts [][2]float64
                 for i := 0; i < 10; i++ {
                         r := r1
@@ -327,14 +342,14 @@ var iconPainters = map[string]func(b *icoBuf){
                         pts = append(pts, [2]float64{cx + r*math.Cos(a), cy + r*math.Sin(a)})
                 }
                 pts = append(pts, pts[0])
-                b.polyline(pts, 1.8)
+                b.polyline(pts, icoSW)
         },
         // стрелки сравнения: diff панелей SFTP
         "diff": func(b *icoBuf) {
-                b.polyline([][2]float64{{4.6, 8.4}, {19.4, 8.4}}, 1.8)
-                b.polyline([][2]float64{{16.2, 5.2}, {19.4, 8.4}, {16.2, 11.6}}, 1.8)
-                b.polyline([][2]float64{{19.4, 15.6}, {4.6, 15.6}}, 1.8)
-                b.polyline([][2]float64{{7.8, 12.4}, {4.6, 15.6}, {7.8, 18.8}}, 1.8)
+                b.polyline([][2]float64{{4.6, 8.4}, {19.4, 8.4}}, icoSW)
+                b.polyline([][2]float64{{16.2, 5.2}, {19.4, 8.4}, {16.2, 11.6}}, icoSW)
+                b.polyline([][2]float64{{19.4, 15.6}, {4.6, 15.6}}, icoSW)
+                b.polyline([][2]float64{{7.8, 12.4}, {4.6, 15.6}, {7.8, 18.8}}, icoSW)
         },
 }
 

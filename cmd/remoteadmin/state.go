@@ -711,6 +711,8 @@ func (s *StateStore) AddHostNamed(ip, name, group string) error {
         if ip == "" {
                 return errors.New("пустой адрес")
         }
+        s.mu.Lock()
+        defer s.mu.Unlock() // v1.14.0: метод мог зваться из фоновых горутин (импорт, восстановление)
         if s.FindHost(ip) != nil {
                 return fmt.Errorf("хост %s уже есть", ip)
         }
@@ -843,10 +845,34 @@ func (s *StateStore) GroupCounts() map[string]int {
 }
 
 func (s *StateStore) AddReport(e ReportEntry) {
+        // v1.14.0: запись велась из горутин каждого хоста без блокировки —
+        // при многих хостах одновременные append к слайсу = гонка данных
+        // и падение «fatal error: concurrent map writes»/порча памяти.
+        s.mu.Lock()
+        defer s.mu.Unlock()
         s.State.Reports = append(s.State.Reports, e)
         if len(s.State.Reports) > 5000 {
                 s.State.Reports = s.State.Reports[len(s.State.Reports)-5000:]
         }
+}
+
+// SetLastOutput потокобезопасно сохраняет последний вывод по хосту
+// (v1.14.0: раньше — прямая запись в карту из горутин, гонка).
+func (s *StateStore) SetLastOutput(ip, out string) {
+        s.mu.Lock()
+        defer s.mu.Unlock()
+        if s.State.LastOutput == nil {
+                s.State.LastOutput = map[string]string{}
+        }
+        s.State.LastOutput[ip] = out
+}
+
+// GetLastOutput — потокобезопасное чтение последнего вывода по хосту.
+func (s *StateStore) GetLastOutput(ip string) (string, bool) {
+        s.mu.Lock()
+        defer s.mu.Unlock()
+        v, ok := s.State.LastOutput[ip]
+        return v, ok
 }
 
 func (s *StateStore) TemplateByName(name string) *Template {

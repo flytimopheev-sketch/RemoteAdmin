@@ -8,6 +8,7 @@ import (
         "net/http"
         "net/smtp"
         "os"
+        "strconv"
         "strings"
         "time"
 )
@@ -120,8 +121,10 @@ func hookEventText(ev HookEvent) string {
 }
 
 // sendEventEmail отправляет письмо через SMTP. Поддерживается:
-//  - smtps://… (порт 465, TLS сразу)  — задаётся в настройках галкой «SSL/TLS сразу»;
-//  - STARTTLS, если сервер его предлагает (порт 587/25).
+//  - порт 465 → TLS-с-первой-команды (автоопределение по порту);
+//  - галка «TLS сразу» в настройках — принудительный implicit TLS;
+//  - STARTTLS, если сервер его предлагает (порт 587/25);
+//  - AUTH PLAIN или LOGIN (почта Mail.ru/Yandex/Ред АДМ требует LOGIN).
 func sendEventEmail(ev HookEvent) error {
         s := store.State.Settings
         if s.EmailSMTP == "" || s.EmailTo == "" {
@@ -138,67 +141,164 @@ func sendEventEmail(ev HookEvent) error {
         return err
 }
 
+// loginAuth реализует механизм AUTH LOGIN (в Go stdlib его нет,
+// а многие серверы — Mail.ru, Yandex 465, Exchange — предлагают только его).
+type loginAuth struct {
+        user, pass string
+}
+
+func (a *loginAuth) Start(server *smtp.ServerInfo) (string, []byte, error) {
+        return "LOGIN", []byte(a.user), nil
+}
+
+func (a *loginAuth) Next(fromServer []byte, more bool) ([]byte, error) {
+        if !more {
+                return nil, nil
+        }
+        switch strings.ToLower(strings.TrimSpace(string(fromServer))) {
+        case "username:":
+                return []byte(a.user), nil
+        case "password:":
+                return []byte(a.pass), nil
+        }
+        // некоторые серверы шлют просто «User Name» / «Password» без двоеточия
+        if strings.Contains(strings.ToLower(string(fromServer)), "user") {
+                return []byte(a.user), nil
+        }
+        return []byte(a.pass), nil
+}
+
+// splitRecipients разбивает поле «Кому» на список адресов
+// (разделители: запятая, точка с запятой, пробел, перевод строки).
+func splitRecipients(to string) []string {
+        var out []string
+        for _, t := range strings.FieldsFunc(to, func(r rune) bool {
+                return r == ',' || r == ';' || r == ' ' || r == '\n' || r == '\t'
+        }) {
+                t = strings.TrimSpace(t)
+                if t != "" {
+                        out = append(out, t)
+                }
+        }
+        return out
+}
+
 func smtpSend(addr, user, pass, from, to, subject, body string, ssl bool) error {
         if from == "" {
                 from = user
         }
-        if i := strings.Index(to, ","); i > 0 {
-                to = strings.TrimSpace(to[:i])
+        rcpts := splitRecipients(to)
+        if len(rcpts) == 0 {
+                return fmt.Errorf("не указан получатель")
         }
-        host, _, err := net.SplitHostPort(addr)
+        to = rcpts[0]
+        host, portStr, err := net.SplitHostPort(addr)
         if err != nil {
-                return fmt.Errorf("адрес SMTP должен быть host:port: %v", err)
+                // пользователь указал только хост — подбираем порт по галке
+                host = strings.TrimSpace(addr)
+                if host == "" {
+                        return fmt.Errorf("не указан SMTP-сервер")
+                }
+                if ssl {
+                        portStr = "465"
+                } else {
+                        portStr = "587"
+                }
+                addr = net.JoinHostPort(host, portStr)
         }
+        port, _ := strconv.Atoi(portStr)
+        // v1.14.0: автоопределение шифрования — жалоба «почта не работает»:
+        // порт 465 (Evolution «SSL/TLS на зашифрованном порту») требует TLS
+        // СРАЗУ, без EHLO; раньше при снятой галке соединение шло открытым
+        // текстом и сервер обрывал его (EOF) — письмо не уходило.
+        implicitTLS := ssl || port == 465 || port == 4465
+
+        dialer := &net.Dialer{Timeout: 10 * time.Second}
+        var conn net.Conn
         var c *smtp.Client
-        if ssl {
-                conn, e := tls.Dial("tcp", addr, &tls.Config{ServerName: host})
-                if e != nil {
-                        return fmt.Errorf("TLS-подключение: %v", e)
+        if implicitTLS {
+                tlsc := &tls.Config{ServerName: host, MinVersion: tls.VersionTLS12}
+                conn, err = tls.DialWithDialer(dialer, "tcp", addr, tlsc)
+                if err != nil {
+                        return fmt.Errorf("TLS-подключение к %s: %v", addr, err)
                 }
                 c, err = smtp.NewClient(conn, host)
         } else {
-                c, err = smtp.Dial(addr)
+                conn, err = dialer.Dial("tcp", addr)
+                if err == nil {
+                        c, err = smtp.NewClient(conn, host)
+                }
         }
         if err != nil {
                 return err
         }
         defer c.Close()
+        // общий тайм-аут сессии: сервер не отвечает — не зависаем навсегда
+        conn.SetDeadline(time.Now().Add(60 * time.Second))
         if err := c.Hello("localhost"); err != nil {
-                return err
+                return fmt.Errorf("EHLO: %v", err)
         }
-        if !ssl {
+        if !implicitTLS {
                 if ok, _ := c.Extension("STARTTLS"); ok {
-                        if err := c.StartTLS(&tls.Config{ServerName: host}); err != nil {
+                        if err := c.StartTLS(&tls.Config{ServerName: host, MinVersion: tls.VersionTLS12}); err != nil {
                                 return fmt.Errorf("STARTTLS: %v", err)
                         }
                 }
         }
         if user != "" {
-                if ok, _ := c.Extension("AUTH"); ok {
-                        if err := c.Auth(smtp.PlainAuth("", user, pass, host)); err != nil {
-                                return fmt.Errorf("AUTH: %v", err)
-                        }
+                if err := tryAuth(c, user, pass, host); err != nil {
+                        return err
                 }
         }
         if err := c.Mail(from); err != nil {
-                return err
+                return fmt.Errorf("MAIL FROM: %v", err)
         }
-        if err := c.Rcpt(to); err != nil {
-                return err
+        for _, r := range rcpts {
+                if err := c.Rcpt(r); err != nil {
+                        return fmt.Errorf("RCPT %s: %v", r, err)
+                }
         }
         w, err := c.Data()
         if err != nil {
                 return err
         }
-        msg := fmt.Sprintf("From: %s\r\nTo: %s\r\nSubject: %s\r\nContent-Type: text/plain; charset=UTF-8\r\nDate: %s\r\n\r\n%s\r\n",
-                from, to, subject, time.Now().Format(time.RFC1123Z), body)
+        msg := fmt.Sprintf("From: %s\r\nTo: %s\r\nSubject: %s\r\nContent-Type: text/plain; charset=UTF-8\r\nX-Mailer: %s/%s\r\nDate: %s\r\n\r\n%s\r\n",
+                from, strings.Join(rcpts, ", "), subject, AppName, AppVersion, time.Now().Format(time.RFC1123Z), body)
         if _, err := w.Write([]byte(msg)); err != nil {
                 return err
         }
         if err := w.Close(); err != nil {
-                return err
+                return fmt.Errorf("DATA: %v", err)
         }
         return c.Quit()
+}
+
+// tryAuth подбирает механизм аутентификации: PLAIN → LOGIN → CRAM-MD5.
+// Раньше только PLAIN: Mail.ru/Yandex на некоторых портах отвечают
+// «535 auth failed» именно потому, что ждут LOGIN.
+func tryAuth(c *smtp.Client, user, pass, host string) error {
+        okPlain, _ := c.Extension("AUTH")
+        if !okPlain {
+                return nil // сервер не требует аутентификации (локальный relay)
+        }
+        // пароль нельзя отправлять открытым текстом: без TLS разрешаем
+        // аутентификацию только для локальных релеев (localhost/127.0.0.1)
+        st, _ := c.TLSConnectionState()
+        if !st.HandshakeComplete {
+                if host != "localhost" && host != "127.0.0.1" && !strings.HasPrefix(host, "::1") {
+                        return fmt.Errorf("сервер %s не поддерживает шифрование (STARTTLS/TLS) — пароль отправлять небезопасно; включите порт 465 или 587", host)
+                }
+        }
+        if err := c.Auth(smtp.PlainAuth("", user, pass, host)); err == nil {
+                return nil
+        }
+        if err := c.Auth(&loginAuth{user: user, pass: pass}); err == nil {
+                return nil
+        }
+        if err := c.Auth(smtp.CRAMMD5Auth(user, pass)); err == nil {
+                return nil
+        }
+        return fmt.Errorf("AUTH: сервер отклонил логин/пароль (проверьте логин и пароль приложения)")
 }
 
 // testWebhookURL — кнопка «Проверить» в настройках: шлёт тестовое событие.

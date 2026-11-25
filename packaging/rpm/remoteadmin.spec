@@ -1,5 +1,5 @@
 Name:           remoteadmin
-Version:        1.13.0
+Version:        1.14.0
 Release:        1%{?dist}
 Summary:        Современный SSH-менеджер группы хостов (GTK3)
 License:        MIT
@@ -73,6 +73,17 @@ DESK
 %{_datadir}/icons/hicolor/128x128/apps/remoteadmin.png
 
 %changelog
+* Tue Nov 25 2026 RemoteAdmin <admin@remoteadmin.local> 1.14.0-1
+- Десять современных тем оформления (Nord, Catppuccin, One Dark, Tokyo Night,
+  Gruvbox, Dracula, Everforest, Solarized Light + Aurora тёмная/светлая)
+- Починены e-mail уведомления: авто-TLS по порту (465/587), AUTH PLAIN/LOGIN,
+  несколько получателей, тайм-ауты, точная ошибка сервера при проверке
+- Webhook: кнопка «Что это?» с подробным объяснением
+- Плейбук: компактные кнопки, типы задач с модулями ansible, справка «?»
+- Устранены гонки данных, вызывавшие вылеты при многих хостах
+  (мониторинг, LastOutput, журнал); лимит параллельных опросов
+- Иконки вкладок перерисованы в современном линейном стиле
+
 * Mon Nov 24 2026 RemoteAdmin <admin@remoteadmin.local> 1.13.0-1
 - Надёжность: перехват внутренних сбоев — приложение не закрывается молчу,
   стек ошибки пишется в ~/.config/RemoteAdmin/crash.log и журнал событий

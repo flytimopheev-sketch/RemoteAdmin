@@ -12,7 +12,7 @@
 #   GTKLIB    — GTK3 lib dir to bundle into AppImage (auto-detected)
 set -e
 cd "$(dirname "$0")/.."
-export VERSION=1.13.0
+export VERSION=1.14.0
 export RELEASE=1
 export PKGNAME=remoteadmin
 export OUT=${OUT:-dist}
@@ -21,8 +21,6 @@ mkdir -p "$OUT"
 
 source "$HOME/env.sh" 2>/dev/null || true
 export GOFLAGS=-mod=vendor
-# mksquashfs/gdk-pixbuf-query-loaders могут жить в sandbox-gtkroot
-if [ -d "$HOME/gtkroot/usr/bin" ]; then export PATH="$HOME/gtkroot/usr/bin:$PATH"; fi
 
 # sandbox rpm toolkit takes precedence if it exists
 if [ -d "$HOME/rpmroot/usr/bin" ]; then export PATH="$HOME/rpmroot/usr/bin:$PATH"; fi
@@ -48,16 +46,20 @@ echo "== 3. RPM =="
 rm -rf "$BUILDDIR"/{BUILD,BUILDROOT,RPMS,SOURCES,SPECS,SRPMS}
 mkdir -p "$BUILDDIR"/{BUILD,BUILDROOT,RPMS,SOURCES,SPECS,SRPMS}
 TARBALL="$PKGNAME-$VERSION.tar.gz"
-tar --exclude='.git' --exclude='icon.png' --transform "s|^[Rr]emote[Aa]dmin[^/]*|remoteadmin-${VERSION}|" \
+tar --exclude='remoteadmin/.git' --exclude='remoteadmin/remoteadmin' --exclude='remoteadmin/icon.png' \
+    --exclude='remoteadmin/.build' --exclude='remoteadmin/dist' --exclude='remoteadmin/dist14' \
+    --transform "s|^remoteadmin[^/]*|remoteadmin-${VERSION}|" \
   -czf "$BUILDDIR/SOURCES/$TARBALL" -C .. "$(basename $PWD)"
 RPMB=rpmbuild
 RPMOPTS=""
-RPLD=""
+# NB: RPM 4.20 игнорирует --define _rpmconfigdir — работает только переменная
+# окружения RPM_CONFIGDIR (см. CONTEXT.md).
 if [ -d "$HOME/rpmroot/usr/lib/rpm" ]; then
-  # v1.13.0: rpmrc читается ДО обработки --define, поэтому путь к конфигурации
-  # задаётся переменной окружения RPM_CONFIGDIR, а не макросом.
   export RPM_CONFIGDIR="$HOME/rpmroot/usr/lib/rpm"
+  RPMOPTS=""
   RPLD="LD_LIBRARY_PATH=$HOME/rpmroot/usr/lib/x86_64-linux-gnu:$HOME/gtkroot/usr/lib/x86_64-linux-gnu"
+else
+  RPLD=""
 fi
 eval "$RPLD $RPMB -ba --define \"_topdir $BUILDDIR\" --define \"_dbpath $BUILDDIR/rpmdb\" $RPMOPTS \
   --define \"pkgname $PKGNAME\" --define \"version $VERSION\" --define \"release $RELEASE\" \
@@ -210,10 +212,7 @@ else
 fi
 
 echo "== 6. Source tarball =="
-# v1.13.0: исключения по ИМЕНИ (без пути) — регистр каталога сборки не важен
-tar --exclude='.git' --exclude='icon.png' --exclude='.build' --exclude='dist' \
-    --exclude='remoteadmin' --exclude='CONTEXT.md' \
-    --transform "s|^[Rr]emote[Aa]dmin[^/]*|remoteadmin-${VERSION}|" -czf "$OUT/${PKGNAME}-${VERSION}-source.tar.gz" -C .. "$(basename $PWD)"
+tar --exclude='remoteadmin/.git' --exclude='remoteadmin/remoteadmin' --exclude='remoteadmin/icon.png' --exclude='remoteadmin/dist' --exclude='remoteadmin/.build' --transform "s|^remoteadmin[^/]*|remoteadmin-${VERSION}|" -czf "$OUT/${PKGNAME}-${VERSION}-source.tar.gz" -C .. "$(basename $PWD)"
 echo "SRC: $OUT/${PKGNAME}-${VERSION}-source.tar.gz"
 
 echo "== DONE =="

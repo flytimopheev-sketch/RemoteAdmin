@@ -74,13 +74,172 @@ var lightPalette = palette{
         Shadow:    "rgba(20,26,44,0.22)",
 }
 
+// ---- v1.14.0: современные темы (проверенные фирменные схемы) ----
+
+var nordPalette = palette{
+        Bg:        "#2e3440",
+        Side:      "#3b4252",
+        Panel:     "#333a47",
+        PanelAlt:  "#3b4252",
+        Hover:     "#434c5e",
+        Text:      "#eceff4",
+        Dim:       "#d8dee9",
+        Faint:     "#7b88a1",
+        Accent:    "#88c0d0",
+        AccentDim: "#5e81ac",
+        OnAccent:  "#2e3440",
+        Ok:        "#a3be8c",
+        Danger:    "#bf616a",
+        Warn:      "#ebcb8b",
+        Info:      "#81a1c1",
+        Border:    "rgba(236,239,244,0.09)",
+        Shadow:    "rgba(0,0,0,0.55)",
+}
+
+var catppuccinPalette = palette{
+        Bg:        "#1e1e2e",
+        Side:      "#181825",
+        Panel:     "#262637",
+        PanelAlt:  "#313244",
+        Hover:     "#45475a",
+        Text:      "#cdd6f4",
+        Dim:       "#a6adc8",
+        Faint:     "#6c7086",
+        Accent:    "#cba6f7",
+        AccentDim: "#b4befe",
+        OnAccent:  "#11111b",
+        Ok:        "#a6e3a1",
+        Danger:    "#f38ba8",
+        Warn:      "#f9e2af",
+        Info:      "#89b4fa",
+        Border:    "rgba(205,214,244,0.09)",
+        Shadow:    "rgba(0,0,0,0.60)",
+}
+
+var oneDarkPalette = palette{
+        Bg:        "#282c34",
+        Side:      "#21252b",
+        Panel:     "#2c313a",
+        PanelAlt:  "#333842",
+        Hover:     "#3e4451",
+        Text:      "#dcdfe4",
+        Dim:       "#9da5b4",
+        Faint:     "#5c6370",
+        Accent:    "#61afef",
+        AccentDim: "#528bff",
+        OnAccent:  "#1b1f27",
+        Ok:        "#98c379",
+        Danger:    "#e06c75",
+        Warn:      "#e5c07b",
+        Info:      "#56b6c2",
+        Border:    "rgba(220,223,228,0.09)",
+        Shadow:    "rgba(0,0,0,0.55)",
+}
+
+var tokyoNightPalette = palette{
+        Bg:        "#1a1b26",
+        Side:      "#16161e",
+        Panel:     "#1f2233",
+        PanelAlt:  "#24283b",
+        Hover:     "#2f334d",
+        Text:      "#c0caf5",
+        Dim:       "#a9b1d6",
+        Faint:     "#565f89",
+        Accent:    "#7aa2f7",
+        AccentDim: "#6183bb",
+        OnAccent:  "#10131e",
+        Ok:        "#9ece6a",
+        Danger:    "#f7768e",
+        Warn:      "#e0af68",
+        Info:      "#7dcfff",
+        Border:    "rgba(192,202,245,0.09)",
+        Shadow:    "rgba(0,0,0,0.62)",
+}
+
+var gruvboxPalette = palette{
+        Bg:        "#282828",
+        Side:      "#1d2021",
+        Panel:     "#32302f",
+        PanelAlt:  "#3c3836",
+        Hover:     "#504945",
+        Text:      "#ebdbb2",
+        Dim:       "#bdae93",
+        Faint:     "#928374",
+        Accent:    "#8ec07c",
+        AccentDim: "#83a598",
+        OnAccent:  "#1d2021",
+        Ok:        "#b8bb26",
+        Danger:    "#fb4934",
+        Warn:      "#fabd2f",
+        Info:      "#83a598",
+        Border:    "rgba(235,219,178,0.10)",
+        Shadow:    "rgba(0,0,0,0.58)",
+}
+
+var draculaPalette = palette{
+        Bg:        "#282a36",
+        Side:      "#21222c",
+        Panel:     "#2f3141",
+        PanelAlt:  "#343746",
+        Hover:     "#44475a",
+        Text:      "#f8f8f2",
+        Dim:       "#c3c6d4",
+        Faint:     "#6272a4",
+        Accent:    "#bd93f9",
+        AccentDim: "#a78bfa",
+        OnAccent:  "#191a21",
+        Ok:        "#50fa7b",
+        Danger:    "#ff5555",
+        Warn:      "#f1fa8c",
+        Info:      "#8be9fd",
+        Border:    "rgba(248,248,242,0.09)",
+        Shadow:    "rgba(0,0,0,0.60)",
+}
+
+var everforestPalette = palette{
+        Bg:        "#2d353b",
+        Side:      "#242d31",
+        Panel:     "#343f44",
+        PanelAlt:  "#3d484d",
+        Hover:     "#475258",
+        Text:      "#d3c6aa",
+        Dim:       "#9da9a0",
+        Faint:     "#7a8478",
+        Accent:    "#83c092",
+        AccentDim: "#7fbbb3",
+        OnAccent:  "#232a2e",
+        Ok:        "#a7c080",
+        Danger:    "#e67e80",
+        Warn:      "#dbbc7f",
+        Info:      "#7fbbb3",
+        Border:    "rgba(211,198,170,0.10)",
+        Shadow:    "rgba(0,0,0,0.55)",
+}
+
+var solarizedLightPalette = palette{
+        Bg:        "#fdf6e3",
+        Side:      "#eee8d5",
+        Panel:     "#fffbef",
+        PanelAlt:  "#f2ecdb",
+        Hover:     "#e4dcc3",
+        Text:      "#073642",
+        Dim:       "#586e75",
+        Faint:     "#93a1a1",
+        Accent:    "#268bd2",
+        AccentDim: "#1f6fab",
+        OnAccent:  "#ffffff",
+        Ok:        "#859900",
+        Danger:    "#dc322f",
+        Warn:      "#b58900",
+        Info:      "#2aa198",
+        Border:    "rgba(7,54,66,0.12)",
+        Shadow:    "rgba(7,54,66,0.20)",
+}
+
 // currentPalette returns the palette for the active theme with opacity applied
 // to the main surfaces.
 func currentPalette() palette {
-        base := darkPalette
-        if isLight() {
-                base = lightPalette
-        }
+        base, _ := paletteOf(store.State.Settings.Theme)
         op := 0.85
         if store.State.Settings.Opacity > 0.05 {
                 op = store.State.Settings.Opacity
@@ -98,8 +257,66 @@ func currentPalette() palette {
         return p
 }
 
-// isLight reports whether the light theme is active.
-func isLight() bool { return store.State.Settings.Theme == "light" }
+// ---------------------------------------------------------------------------
+// v1.14.0: реестр тем. Раньше были только dark/light; жалоба — «добавить
+// еще несколько тем современных актуальных». Добавлены популярные схемы
+// редакторов/десктопов (Nord, Catppuccin, One Dark, Tokyo Night, Gruvbox,
+// Dracula, Everforest, Solarized Light). Все поля палитры обязательны.
+// ---------------------------------------------------------------------------
+
+type themeDef struct {
+        id    string
+        title string
+        p     palette
+        light bool
+}
+
+var themeList = []themeDef{
+        {"aurora-dark", "Aurora Тёмная (по умолчанию)", darkPalette, false},
+        {"aurora-light", "Aurora Светлая", lightPalette, true},
+        {"nord", "Nord", nordPalette, false},
+        {"catppuccin", "Catppuccin Mocha", catppuccinPalette, false},
+        {"onedark", "One Dark Pro", oneDarkPalette, false},
+        {"tokyonight", "Tokyo Night", tokyoNightPalette, false},
+        {"gruvbox", "Gruvbox Dark", gruvboxPalette, false},
+        {"dracula", "Dracula", draculaPalette, false},
+        {"everforest", "Everforest Dark", everforestPalette, false},
+        {"solarized", "Solarized Light", solarizedLightPalette, true},
+}
+
+// paletteOf возвращает палитру и принадлежность к светлому семейству.
+// Совместимость: старые значения state.json «dark»/«light»/пустое.
+func paletteOf(id string) (palette, bool) {
+        switch id {
+        case "", "dark":
+                id = "aurora-dark"
+        case "light":
+                id = "aurora-light"
+        }
+        for _, t := range themeList {
+                if t.id == id {
+                        return t.p, t.light
+                }
+        }
+        return darkPalette, false
+}
+
+func activeThemeID() string {
+        id := store.State.Settings.Theme
+        switch id {
+        case "", "dark":
+                return "aurora-dark"
+        case "light":
+                return "aurora-light"
+        }
+        return id
+}
+
+// isLight reports whether a light-family theme is active.
+func isLight() bool {
+        _, light := paletteOf(store.State.Settings.Theme)
+        return light
+}
 
 // a returns an rgba() string of a hex color with the given alpha.
 func a(hex string, alpha float64) string {
@@ -109,10 +326,7 @@ func a(hex string, alpha float64) string {
 }
 
 func themeCSS() string {
-        p := darkPalette
-        if isLight() {
-                p = lightPalette
-        }
+        p, _ := paletteOf(store.State.Settings.Theme)
         op := 0.85
         if store.State.Settings.Opacity > 0.05 {
                 op = store.State.Settings.Opacity
